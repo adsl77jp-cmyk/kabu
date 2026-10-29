@@ -1,0 +1,56 @@
+# 平日の朝にレポートを作り、お名前.com のレンタルサーバーへアップロードする
+# 必要な Secrets（Settings → Secrets and variables → Actions）:
+#   FTP_HOST      FTPサーバー名（お名前.com のコントロールパネルに表示）
+#   FTP_USER      FTPユーザー名
+#   FTP_PASSWORD  FTPパスワード
+#   FTP_DIR       アップ先フォルダ（ログイン直後の場所から。例: public_html/example.com）
+name: daily-report
+
+on:
+  schedule:
+    - cron: "30 23 * * 0-4"  # 日本時間 月〜金 8:30（UTC 日〜木 23:30）。混雑時は数分〜十数分遅れる
+  workflow_dispatch:          # Actions 画面の「Run workflow」で手動実行
+
+permissions:
+  contents: write  # キャッシュ・履歴をリポジトリに保存し直すため
+
+concurrency: daily-report
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      TZ: Asia/Tokyo  # 日付の判定を日本時間で
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+          cache: pip
+
+      - name: ライブラリのインストール
+        run: pip install -r requirements.txt
+
+      - name: レポート作成
+        run: python theme_score.py
+
+      - name: お名前.com へアップロード（FTPS）
+        env:
+          FTP_HOST: ${{ secrets.FTP_HOST }}
+          FTP_USER: ${{ secrets.FTP_USER }}
+          FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
+          FTP_DIR: ${{ secrets.FTP_DIR }}
+        run: |
+          curl --fail --silent --show-error --ssl-reqd --ftp-create-dirs \
+            --user "$FTP_USER:$FTP_PASSWORD" \
+            -T public/index.html "ftp://$FTP_HOST/${FTP_DIR%/}/index.html"
+
+      - name: キャッシュと履歴を保存
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet || git commit -m "data: $(date +%F)"
+          git push

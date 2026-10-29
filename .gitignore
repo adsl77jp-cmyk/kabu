@@ -1,0 +1,6 @@
+__pycache__/
+report.html
+public/
+*.log
+golden_cross_*.csv
+高配当_*.csv
