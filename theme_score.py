@@ -59,6 +59,9 @@ import yfinance as yf
 import margin
 
 BASE = Path(__file__).resolve().parent
+SITE_URL = "https://adsl77jp-cmyk.github.io/kabu/"  # 公開ページのURL（sitemap.xml・canonical に使う）
+SITE_DESC = ("日経平均の終値と、いま東京市場で資金が集まっているテーマ・銘柄を毎営業日更新。"
+             "株価・売買代金・ニュース・決算開示・信用残から集計した日本株の分析サイトです。")
 BENCH = "1306.T"  # TOPIX連動ETF（TOPIX指数の代わり）
 WEIGHTS = {"turnover": 0.45, "excess": 0.35, "breadth": 0.20}
 NEWS_WEIGHT = 0.20
@@ -1547,7 +1550,7 @@ def write_html(df, date, history, details, stocks, missing, early_section="", ta
     note = f'<p class="note">データ取得できなかった銘柄: {", ".join(missing)}</p>' if missing else ""
     page = f"""<!doctype html><html lang="ja"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>日本株 テーマ注目度ランキング｜日経平均と注目テーマ・決算サプライズ銘柄</title>
-<meta name="description" content="日経平均の終値と、いま東京市場で資金が集まっているテーマ・銘柄を毎営業日更新。株価・売買代金・ニュース・決算開示・信用残から集計した日本株の分析サイトです。">
+<meta name="description" content="{SITE_DESC}">
 <style>
 :root{{--bg:#fafaf9;--fg:#1c1917;--muted:#78716c;--line:#e7e5e4;--up:#c2410c;--down:#1d4ed8;--accent:#0f766e;--warn:#b45309}}
 @media (prefers-color-scheme:dark){{:root:not([data-theme="light"]){{--bg:#1c1917;--fg:#f5f5f4;--muted:#a8a29e;--line:#44403c;--up:#fb923c;--down:#60a5fa;--accent:#2dd4bf;--warn:#fbbf24}}}}
@@ -1738,8 +1741,21 @@ document.querySelectorAll("table.sortable").forEach(makeSortable);
     # 公開用（レンタルサーバーに置く静的ページ）。銘柄診断はローカルサーバーが要るので外す
     pub = page.replace('<button role="tab" data-tab="diag">銘柄診断</button>\n', "")
     pub = re.sub(r'<section class="tab" id="tab-diag" hidden>.*?</section>\n', "", pub, flags=re.S)
-    (BASE / "public").mkdir(exist_ok=True)
-    (BASE / "public" / "index.html").write_text(pub, encoding="utf-8")
+    title = re.search(r"<title>(.*?)</title>", pub).group(1)
+    pub = pub.replace("</title>\n", "</title>\n"
+                      f'<link rel="canonical" href="{SITE_URL}">\n'
+                      f'<meta property="og:type" content="website"><meta property="og:url" content="{SITE_URL}">\n'
+                      f'<meta property="og:title" content="{title}"><meta property="og:description" content="{SITE_DESC}">\n'
+                      '<meta property="og:locale" content="ja_JP"><meta name="twitter:card" content="summary">\n', 1)
+    out = BASE / "public"
+    out.mkdir(exist_ok=True)
+    (out / "index.html").write_text(pub, encoding="utf-8")
+    (out / "sitemap.xml").write_text(
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+        f"  <url><loc>{SITE_URL}</loc><lastmod>{dt.date.today():%Y-%m-%d}</lastmod><changefreq>daily</changefreq></url>\n"
+        "</urlset>\n", encoding="utf-8")
+    (out / "robots.txt").write_text(f"User-agent: *\nAllow: /\nSitemap: {SITE_URL}sitemap.xml\n", encoding="utf-8")
 
 
 def main():
