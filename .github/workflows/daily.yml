@@ -11,6 +11,9 @@ on:
   schedule:
     - cron: "30 23 * * 0-4"  # 日本時間 月〜金 8:30（UTC 日〜木 23:30）。混雑時は数分〜十数分遅れる
   workflow_dispatch:          # Actions 画面の「Run workflow」で手動実行
+  push:                       # ページの作り方を変えたらすぐ公開し直す（毎朝のデータ保存コミットでは動かない）
+    branches: [main]
+    paths: [theme_score.py, themes.yaml, events.yaml, watchwords.yaml, assets/**, .github/workflows/daily.yml]
 
 permissions:
   contents: write  # キャッシュ・履歴をリポジトリに保存し直すため
