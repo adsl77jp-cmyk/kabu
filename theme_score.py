@@ -43,6 +43,7 @@ import json
 import logging
 import math
 import re
+import shutil
 import sys
 import unicodedata
 import urllib.parse
@@ -60,6 +61,9 @@ import margin
 
 BASE = Path(__file__).resolve().parent
 SITE_URL = "https://adsl77jp-cmyk.github.io/kabu/"  # 公開ページのURL（sitemap.xml・canonical に使う）
+SITE_NAME = "日本株 テーマ注目度ランキング"
+REPO_URL = "https://github.com/adsl77jp-cmyk/kabu"
+STATIC_UPDATED = "2026-10-30"  # 運営者情報・免責事項・プライバシーポリシーの最終更新日（書き換えたら変える）
 SITE_DESC = ("日経平均の終値と、いま東京市場で資金が集まっているテーマ・銘柄を毎営業日更新。"
              "株価・売買代金・ニュース・決算開示・信用残から集計した日本株の分析サイトです。")
 GA4_ID = "G-457CRQKCF8"  # Google アナリティクス（公開ページだけに入れる）
@@ -1740,29 +1744,222 @@ document.querySelectorAll("table.sortable").forEach(makeSortable);
 }})();
 </script></body></html>"""
     (BASE / "report.html").write_text(page, encoding="utf-8")
-    # 公開用（レンタルサーバーに置く静的ページ）。銘柄診断はローカルサーバーが要るので外す
+    write_public(page, df, date, history, details, stock_head, stock_cells)
+
+
+# ---- 公開サイト（GitHub Pages）--------------------------------------------------------------
+# トップは軽くし、全銘柄表・テーマ別・運営者情報などは別ページに分ける（検索に載るURLを増やす）
+
+PUBLIC_CSS = """
+a{color:var(--accent)} .tabs a.navlink{font-size:.9rem;padding:6px 12px;border:1px dashed var(--accent);border-radius:6px;text-decoration:none}
+.crumb{font-size:.8rem;color:var(--muted);margin:0 0 12px} .crumb a{color:inherit}
+footer.site{margin:48px 0 0;padding:16px 0;border-top:1px solid var(--line);font-size:.8rem;color:var(--muted);display:flex;flex-wrap:wrap;gap:6px 16px} footer.site a{color:inherit}
+.prose{max-width:46em;line-height:1.9} .prose h2{margin-top:32px} .prose li{margin:4px 0}
+.tlist{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:8px;list-style:none;padding:0}
+.tlist a{display:flex;justify-content:space-between;gap:8px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;text-decoration:none;color:var(--fg)}
+.tlist a:hover{border-color:var(--accent)} .tlist b{font-variant-numeric:tabular-nums}
+"""
+
+FAVICON = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="6" fill="#0f766e"/>'
+           '<polyline points="5,23 12,16 17,20 27,9" fill="none" stroke="#fff" stroke-width="3.2" '
+           'stroke-linecap="round" stroke-linejoin="round"/></svg>\n')
+
+
+def theme_file(name):
+    """テーマ名 → 公開ページのファイル名（テーマ名をそのまま使い、並び順が変わってもURLが変わらないように）"""
+    return re.sub(r'[\\/:*?"<>|#%\s]+', "-", name) + ".html"
+
+
+def public_head(path, title, desc, graph, prefix=""):
+    """公開ページ共通の <head>（canonical・OGP・GA4・構造化データ）。<style> の手前まで"""
+    esc = html.escape
+    url = SITE_URL + urllib.parse.quote(path)
+    ld = json.dumps({"@context": "https://schema.org", "@graph": graph}, ensure_ascii=False).replace("</", "<\\/")
+    verify = f'<meta name="google-site-verification" content="{GSC_VERIFY}">\n' if not path else ""
+    return (f'<!doctype html><html lang="ja"><head><meta charset="utf-8">\n'
+            f'<meta name="viewport" content="width=device-width,initial-scale=1"><title>{esc(title)}</title>\n'
+            f'<meta name="description" content="{esc(desc)}">\n'
+            f'<link rel="canonical" href="{url}">\n'
+            f'<link rel="icon" href="{prefix}favicon.svg" type="image/svg+xml">\n'
+            f'<meta property="og:type" content="website"><meta property="og:url" content="{url}">\n'
+            f'<meta property="og:site_name" content="{SITE_NAME}"><meta property="og:title" content="{esc(title)}">\n'
+            f'<meta property="og:description" content="{esc(desc)}"><meta property="og:image" content="{SITE_URL}ogp.png">\n'
+            '<meta property="og:locale" content="ja_JP"><meta name="twitter:card" content="summary_large_image">\n'
+            f'{verify}'
+            f'<script async src="https://www.googletagmanager.com/gtag/js?id={GA4_ID}"></script>\n'
+            '<script>window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments);}'
+            f"gtag('js',new Date());gtag('config','{GA4_ID}');</script>\n"
+            f'<script type="application/ld+json">{ld}</script>\n')
+
+
+def page_ld(path, title, crumbs=()):
+    """構造化データ：WebPage（更新日つき）と、下層ページならパンくず"""
+    url = SITE_URL + urllib.parse.quote(path)
+    site = {"@type": "WebSite", "name": SITE_NAME, "url": SITE_URL, "inLanguage": "ja"}
+    graph = [{"@type": "WebPage", "name": title, "url": url, "inLanguage": "ja",
+              "dateModified": dt.date.today().isoformat(), "isPartOf": site}]
+    if not path:
+        graph.insert(0, site)
+    if crumbs:
+        graph.append({"@type": "BreadcrumbList", "itemListElement": [
+            {"@type": "ListItem", "position": i + 1, "name": n, "item": SITE_URL + urllib.parse.quote(p)}
+            for i, (n, p) in enumerate(crumbs)]})
+    return graph
+
+
+def site_footer(prefix=""):
+    links = (("", "トップ"), ("theme/", "テーマ一覧"), ("all.html", "全銘柄"),
+             ("about.html", "運営者情報・データについて"), ("disclaimer.html", "免責事項"), ("privacy.html", "プライバシーポリシー"))
+    return ('<footer class="site">'
+            + "".join(f'<a href="{(prefix + u) or "./"}">{t}</a>' for u, t in links)
+            + f'<span>© {dt.date.today().year} {SITE_NAME}</span></footer>\n')
+
+
+def crumb_html(crumbs, prefix=""):
+    """見た目のパンくず（最後は現在のページなのでリンクにしない）"""
+    parts = [f'<a href="{(prefix + urllib.parse.quote(p)) or "./"}">{html.escape(n)}</a>' for n, p in crumbs[:-1]]
+    return f'<nav class="crumb">{" › ".join(parts + [html.escape(crumbs[-1][0])])}</nav>\n'
+
+
+def write_public(page, df, date, history, details, stock_head, stock_cells):
+    esc = html.escape
+    out = BASE / "public"
+    shutil.rmtree(out, ignore_errors=True)  # なくなったテーマのページを残さない
+    (out / "theme").mkdir(parents=True)
+    css = re.search(r"<style>.*?</style>", page, re.S).group(0).replace("</style>", PUBLIC_CSS + "</style>")
+    # 並べ替え・全銘柄の絞り込みのスクリプトだけを下層ページでも使う（タブ切り替えは使わない）
+    js = page[page.index("function makeSortable"):page.index("// 銘柄診断")]
+    ga_note = "アクセス解析に Google アナリティクス（Cookie を使用）を利用しています。"
+    pages = []  # (path, lastmod)
+    today = dt.date.today().isoformat()
+
+    def save(path, title, desc, body, crumbs=(), lastmod=today):
+        prefix = "../" * path.count("/")
+        canon = path.removesuffix("index.html")  # theme/index.html は theme/ として登録
+        doc = (public_head(canon, title, desc, page_ld(canon, title, crumbs), prefix) + css + "</head><body><main>\n"
+               + (crumb_html(crumbs, prefix) if crumbs else "") + body
+               + site_footer(prefix) + f"</main>\n<script>\n{js}</script></body></html>")
+        (out / path).write_text(doc, encoding="utf-8")
+        pages.append((canon, lastmod))
+
+    # トップ：銘柄診断（ローカルサーバーが要る）と全銘柄表（約4MB）を外す
     pub = page.replace('<button role="tab" data-tab="diag">銘柄診断</button>\n', "")
     pub = re.sub(r'<section class="tab" id="tab-diag" hidden>.*?</section>\n', "", pub, flags=re.S)
+    all_sec = re.search(r'<section class="tab" id="tab-all" hidden>\n(.*?)</section>\n', pub, re.S)
+    n_all = all_sec.group(1).count("<tr>") - 1  # 見出し行を除く
+    pub = pub.replace(all_sec.group(0), "")
+    pub = pub.replace('<button role="tab" data-tab="all">全銘柄</button>',
+                      f'<a class="navlink" href="all.html">全銘柄（{n_all}銘柄）→</a>')
+    pub = re.sub(r"<details><summary>(.*?)</summary>",
+                 lambda m: m.group(0) + f'<p><a href="theme/{urllib.parse.quote(theme_file(html.unescape(m.group(1))))}">'
+                                        f'{m.group(1)}の銘柄ページへ →</a></p>', pub)
     title = re.search(r"<title>(.*?)</title>", pub).group(1)
-    pub = pub.replace("</title>\n", "</title>\n"
-                      f'<link rel="canonical" href="{SITE_URL}">\n'
-                      f'<meta property="og:type" content="website"><meta property="og:url" content="{SITE_URL}">\n'
-                      f'<meta property="og:title" content="{title}"><meta property="og:description" content="{SITE_DESC}">\n'
-                      '<meta property="og:locale" content="ja_JP"><meta name="twitter:card" content="summary">\n'
-                      f'<meta name="google-site-verification" content="{GSC_VERIFY}">\n'
-                      f'<script async src="https://www.googletagmanager.com/gtag/js?id={GA4_ID}"></script>\n'
-                      '<script>window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments);}'
-                      f"gtag('js',new Date());gtag('config','{GA4_ID}');</script>\n", 1)
-    pub = pub.replace("。</p>\n</main>",
-                      "。<br>アクセス解析に Google アナリティクス（Cookie を使用）を利用しています。</p>\n</main>", 1)
-    out = BASE / "public"
-    out.mkdir(exist_ok=True)
+    pub = public_head("", title, SITE_DESC, page_ld("", title)) + pub[pub.index("<style>"):]
+    pub = pub.replace("</style>", PUBLIC_CSS + "</style>", 1)
+    pub = pub.replace("。</p>\n</main>", f"。<br>{ga_note}</p>\n{site_footer()}</main>", 1)
     (out / "index.html").write_text(pub, encoding="utf-8")
+    pages.append(("", today))
+
+    # 全銘柄
+    save("all.html", f"全銘柄の業績・割安度ランキング（{n_all}銘柄）｜{SITE_NAME}",
+         f"東証プライム・スタンダードの全{n_all}銘柄を、営業利益・売上の成長率、PER・PBR・ROE・配当利回り、信用残から"
+         "成長度・割安度・評価で順位付け。コード・銘柄名・業種で絞り込みと並べ替えができます。毎営業日更新。",
+         all_sec.group(1).replace("<h2>", "<h1>", 1).replace("</h2>", "</h1>", 1),
+         (("トップ", ""), ("全銘柄", "all.html")))
+
+    # テーマ別
+    n = len(df)
+    items = []
+    for i, r in df.iterrows():
+        name = r["テーマ"]
+        f = "theme/" + theme_file(name)
+        s = r["総合"]
+        lvl = "資金が集まっている（注目）状態" if s >= 70 else "関心が薄れている状態" if s <= 30 else "平常の範囲"
+        news = ("" if pd.isna(r["ニュース倍率"]) else
+                f"関連ニュースの件数はふだんの{r['ニュース倍率']:.1f}倍（{r['記事数']:.0f}件）でした。")
+        mem = sorted(details[name], key=lambda x: -x["total"] if pd.notna(x["total"]) else 1)
+        names = "・".join(x["name"] for x in mem[:4])
+        rows = "".join(f'<tr><td>{x["code"]}</td><td class="name">{esc(x["name"])}{spec_badge(x)}</td>{stock_cells(x)}</tr>'
+                       for x in mem)
+        cls = lambda v: "up" if v > 0 else "down" if v < 0 else ""
+        minis = "".join(f'<div class="mini"><span class="sub">{k}</span><b class="{c}">{v}</b></div>' for k, v, c in (
+            ("注目度（総合）", f"{s:.0f}点", ""), ("順位", f"{i}位／{n}テーマ", ""),
+            ("前日比", f"{r['前日比']:+.0f}点", cls(r["前日比"])), ("売買代金（対20日平均）", f"{r['売買代金倍率']:.2f}倍", ""),
+            ("対TOPIX", f"{r['対TOPIX']:+.1%}", cls(r["対TOPIX"])), ("上昇した銘柄の割合", f"{r['上昇比率']:.0%}", "")))
+        body = f"""<h1>{esc(name)}関連銘柄の注目度と一覧</h1>
+<p class="sub">{date:%Y/%m/%d} 終値ベース ・ 毎営業日更新</p>
+<p class="lead">{date:%Y年%m月%d日}時点の「{esc(name)}」テーマの注目度は<b>{s:.0f}点</b>で、{n}テーマ中{i}位、{lvl}です（50が平常、70を超えると注目）。
+前日からは{r['前日比']:+.0f}点、5日前からは{r['5日比']:+.0f}点の変化。売買代金は20日平均の{r['売買代金倍率']:.2f}倍で、
+TOPIXに対して{r['対TOPIX']:+.1%}、構成銘柄の{r['上昇比率']:.0%}が上昇しました。{news}</p>
+<div class="minis">{minis}</div>
+<p class="sub">注目度（株価スコア）の30営業日の推移</p>{sparkline(history[name], w=320, h=60)}
+<h2>{esc(name)}の構成銘柄（{len(mem)}銘柄）</h2>
+<p class="sub">評価 = 成長度60% + 割安度40%（全銘柄内の順位から0〜100）。見出しクリックで並べ替え。</p>
+<div class="wrap"><table class="sortable"><thead><tr><th>コード</th><th>銘柄</th>{stock_head}</tr></thead><tbody>{rows}</tbody></table></div>
+<h2>ほかのテーマ</h2>
+<ul class="tlist">{"".join(f'<li><a href="{urllib.parse.quote(theme_file(t))}">{esc(t)}<b>{v:.0f}</b></a></li>' for t, v in zip(df["テーマ"], df["総合"]) if t != name)}</ul>
+<p class="note">投資助言ではありません。データ: Yahoo Finance（yfinance）、Googleニュース、東証。</p>
+"""
+        save(f, f"{name}関連銘柄の注目度と一覧（{len(mem)}銘柄）｜{SITE_NAME}",
+             f"{name}関連の日本株{len(mem)}銘柄（{names}など）の株価・売買代金・業績・割安度を毎営業日更新。"
+             f"{date:%m/%d}時点のテーマ注目度は{s:.0f}点（{n}テーマ中{i}位）。",
+             body, (("トップ", ""), ("テーマ一覧", "theme/"), (name, f)))
+        items.append(f'<li><a href="{urllib.parse.quote(theme_file(name))}">{i}. {esc(name)}<b>{s:.0f}</b></a></li>')
+
+    save("theme/index.html", f"テーマ別 注目度ランキング（{n}テーマ）｜{SITE_NAME}",
+         f"半導体・AI・防衛・銀行など日本株の{n}テーマを、売買代金・対TOPIX・上昇銘柄の割合・ニュース件数から毎営業日採点。"
+         "テーマごとの構成銘柄と業績・割安度も確認できます。",
+         f"""<h1>テーマ別 注目度ランキング（{n}テーマ）</h1>
+<p class="sub">{date:%Y/%m/%d} 終値ベース ・ 数字は注目度（50が平常、70超で注目）</p>
+<ul class="tlist">{"".join(items)}</ul>
+""", (("トップ", ""), ("テーマ一覧", "theme/")))
+
+    # 運営者情報・免責事項・プライバシーポリシー（内容を変えたら STATIC_UPDATED を更新）
+    w = WEIGHTS
+    save("about.html", f"運営者情報・データについて｜{SITE_NAME}",
+         "日本株 テーマ注目度ランキングの運営者、データの出典、注目度・評価の算出方法、更新タイミングについて。", f"""<div class="prose">
+<h1>運営者情報・データについて</h1>
+<h2>このサイトについて</h2>
+<p>「{SITE_NAME}」は、東京市場でいまどのテーマ・銘柄に資金が集まっているかを、公開されているデータから毎営業日自動で集計して掲載している個人運営の日本株分析サイトです。</p>
+<ul><li>運営者：adsl77jp（個人）</li><li>お問い合わせ：<a href="{REPO_URL}/issues">GitHub の Issues</a></li>
+<li>ソースコード：<a href="{REPO_URL}">{REPO_URL}</a></li><li>更新：平日の朝8時30分ごろ（自動）</li></ul>
+<h2>データの出典</h2>
+<ul><li>株価・出来高・財務データ：Yahoo Finance（yfinance 経由。遅延や誤りを含む場合があります）</li>
+<li>ニュース件数：Googleニュース</li><li>決算・業績修正などの開示：東京証券取引所 適時開示情報（TDnet）</li>
+<li>信用取引残高：日本取引所グループ（JPX）</li><li>上場銘柄の一覧・業種：日本取引所グループ（JPX）</li></ul>
+<h2>算出方法</h2>
+<ul><li><b>テーマの注目度（総合）</b> = 株価スコア{1 - NEWS_WEIGHT:.0%} + ニュース{NEWS_WEIGHT:.0%}。株価スコアは、売買代金の増え方{w["turnover"]:.0%}・TOPIXに対する値動き{w["excess"]:.0%}・上昇した銘柄の割合{w["breadth"]:.0%}を、過去{Z_WINDOW}営業日と比べて0〜100点にしたもの（50が平常）。</li>
+<li><b>銘柄の評価</b> = 成長度60% + 割安度40%。成長度は営業利益・売上の3年成長率、連続増益、直近四半期の前年同期比。割安度はPER・PBR・ROE・配当利回り。いずれも全銘柄内の順位から0〜100点にしています。</li></ul>
+</div>
+""", (("トップ", ""), ("運営者情報・データについて", "about.html")), STATIC_UPDATED)
+    save("disclaimer.html", f"免責事項｜{SITE_NAME}", "日本株 テーマ注目度ランキングの免責事項。", """<div class="prose">
+<h1>免責事項</h1>
+<ul><li>当サイトの情報は、投資判断の参考となる情報の提供を目的としたもので、特定の銘柄の売買を勧めるもの（投資助言）ではありません。</li>
+<li>掲載しているデータは外部の情報源から自動で取得・計算しています。正確性・完全性・最新性には努めていますが、遅延・欠落・誤りを含む場合があり、保証するものではありません。</li>
+<li>当サイトの情報を利用したことで生じたいかなる損害についても、運営者は責任を負いません。投資の最終判断はご自身の責任で行ってください。</li>
+<li>掲載内容は予告なく変更・削除することがあります。</li></ul>
+</div>
+""", (("トップ", ""), ("免責事項", "disclaimer.html")), STATIC_UPDATED)
+    save("privacy.html", f"プライバシーポリシー｜{SITE_NAME}", "日本株 テーマ注目度ランキングのプライバシーポリシー（アクセス解析について）。", """<div class="prose">
+<h1>プライバシーポリシー</h1>
+<h2>アクセス解析ツールについて</h2>
+<p>当サイトでは、Google が提供するアクセス解析ツール「Google アナリティクス」を利用しています。Google アナリティクスはトラフィックデータの収集のために Cookie を使用しています。このデータは匿名で収集されており、個人を特定するものではありません。</p>
+<p>この機能は Cookie を無効にすることで収集を拒否できます。お使いのブラウザの設定をご確認いただくか、<a href="https://tools.google.com/dlpage/gaoptout?hl=ja">Google アナリティクス オプトアウト アドオン</a>をご利用ください。データの取り扱いについては<a href="https://policies.google.com/technologies/partner-sites?hl=ja">Google のポリシーと規約</a>をご覧ください。</p>
+<h2>個人情報の取り扱い</h2>
+<p>当サイトには会員登録やお問い合わせフォームはなく、氏名・メールアドレスなどの個人情報は取得していません。</p>
+<h2>改定</h2>
+<p>本ポリシーの内容は、必要に応じて予告なく変更することがあります。</p>
+</div>
+""", (("トップ", ""), ("プライバシーポリシー", "privacy.html")), STATIC_UPDATED)
+
+    (out / "favicon.svg").write_text(FAVICON, encoding="utf-8")
+    if (BASE / "assets" / "ogp.png").exists():
+        shutil.copy(BASE / "assets" / "ogp.png", out / "ogp.png")
     (out / "sitemap.xml").write_text(
         '<?xml version="1.0" encoding="UTF-8"?>\n'
         '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
-        f"  <url><loc>{SITE_URL}</loc><lastmod>{dt.date.today():%Y-%m-%d}</lastmod><changefreq>daily</changefreq></url>\n"
-        "</urlset>\n", encoding="utf-8")
+        + "".join(f"  <url><loc>{SITE_URL}{urllib.parse.quote(p)}</loc><lastmod>{m}</lastmod></url>\n" for p, m in pages)
+        + "</urlset>\n", encoding="utf-8")
     (out / "robots.txt").write_text(f"User-agent: *\nAllow: /\nSitemap: {SITE_URL}sitemap.xml\n", encoding="utf-8")
 
 

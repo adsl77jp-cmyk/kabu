@@ -63,10 +63,11 @@ jobs:
           FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
           FTP_DIR: ${{ secrets.FTP_DIR }}
         run: |
-          for f in index.html sitemap.xml robots.txt; do
+          cd public
+          find . -type f ! -name .nojekyll | sed 's|^\./||' | while read -r f; do
             curl --fail --silent --show-error --ssl-reqd --ftp-create-dirs \
               --user "$FTP_USER:$FTP_PASSWORD" \
-              -T "public/$f" "ftp://$FTP_HOST/${FTP_DIR%/}/$f"
+              -T "$f" "ftp://$FTP_HOST/${FTP_DIR%/}/$f"
           done
 
       - name: キャッシュと履歴を保存
