@@ -62,6 +62,8 @@ BASE = Path(__file__).resolve().parent
 SITE_URL = "https://adsl77jp-cmyk.github.io/kabu/"  # 公開ページのURL（sitemap.xml・canonical に使う）
 SITE_DESC = ("日経平均の終値と、いま東京市場で資金が集まっているテーマ・銘柄を毎営業日更新。"
              "株価・売買代金・ニュース・決算開示・信用残から集計した日本株の分析サイトです。")
+GA4_ID = "G-457CRQKCF8"  # Google アナリティクス（公開ページだけに入れる）
+GSC_VERIFY = "dn1J65lcb-gHhuFv3DjvQdBRd6YJquvos6qIaajGCpA"  # Search Console の所有権確認
 BENCH = "1306.T"  # TOPIX連動ETF（TOPIX指数の代わり）
 WEIGHTS = {"turnover": 0.45, "excess": 0.35, "breadth": 0.20}
 NEWS_WEIGHT = 0.20
@@ -1746,7 +1748,13 @@ document.querySelectorAll("table.sortable").forEach(makeSortable);
                       f'<link rel="canonical" href="{SITE_URL}">\n'
                       f'<meta property="og:type" content="website"><meta property="og:url" content="{SITE_URL}">\n'
                       f'<meta property="og:title" content="{title}"><meta property="og:description" content="{SITE_DESC}">\n'
-                      '<meta property="og:locale" content="ja_JP"><meta name="twitter:card" content="summary">\n', 1)
+                      '<meta property="og:locale" content="ja_JP"><meta name="twitter:card" content="summary">\n'
+                      f'<meta name="google-site-verification" content="{GSC_VERIFY}">\n'
+                      f'<script async src="https://www.googletagmanager.com/gtag/js?id={GA4_ID}"></script>\n'
+                      '<script>window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments);}'
+                      f"gtag('js',new Date());gtag('config','{GA4_ID}');</script>\n", 1)
+    pub = pub.replace("。</p>\n</main>",
+                      "。<br>アクセス解析に Google アナリティクス（Cookie を使用）を利用しています。</p>\n</main>", 1)
     out = BASE / "public"
     out.mkdir(exist_ok=True)
     (out / "index.html").write_text(pub, encoding="utf-8")
