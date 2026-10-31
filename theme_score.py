@@ -1955,6 +1955,8 @@ TOPIXに対して{r['対TOPIX']:+.1%}、構成銘柄の{r['上昇比率']:.0%}�
     (out / "favicon.svg").write_text(FAVICON, encoding="utf-8")
     if (BASE / "assets" / "ogp.png").exists():
         shutil.copy(BASE / "assets" / "ogp.png", out / "ogp.png")
+    for f in (BASE / "static").glob("*"):  # Search Console の確認ファイルなど、そのまま置くファイル（消さないこと）
+        shutil.copy(f, out / f.name)
     (out / "sitemap.xml").write_text(
         '<?xml version="1.0" encoding="UTF-8"?>\n'
         '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'

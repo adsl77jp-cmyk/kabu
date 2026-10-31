@@ -13,7 +13,7 @@ on:
   workflow_dispatch:          # Actions 画面の「Run workflow」で手動実行
   push:                       # ページの作り方を変えたらすぐ公開し直す（毎朝のデータ保存コミットでは動かない）
     branches: [main]
-    paths: [theme_score.py, themes.yaml, events.yaml, watchwords.yaml, assets/**, .github/workflows/daily.yml]
+    paths: [theme_score.py, themes.yaml, events.yaml, watchwords.yaml, assets/**, static/**, .github/workflows/daily.yml]
 
 permissions:
   contents: write  # キャッシュ・履歴をリポジトリに保存し直すため
