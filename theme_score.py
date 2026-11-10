@@ -558,6 +558,129 @@ def fetch_jp():
             "live": last == now.date() and now.weekday() < 5 and dt.time(9, 0) <= now.time() < dt.time(15, 30)}
 
 
+# 市場の温度計：恐怖指数などのメーターと、それを0〜100にそろえて合成した独自の総合メーター
+NKVI_CSV = "https://indexes.nikkei.co.jp/nkave/historical/nikkei_stock_average_vi_daily_jp.csv"
+FEAR_NEWS = "株価 暴落 OR 急落 OR 大幅安 OR リスクオフ OR 恐怖指数"  # 不安を表す言葉のニュース件数
+MOOD_HISTORY = BASE / "mood_history.csv"
+GREEN, LGREEN, YELLOW, ORANGE, RED = "#43a047", "#9ccc65", "#f5c518", "#f28c1b", "#e53935"
+VOL_ZONES = [(20, GREEN, "平穏"), (30, YELLOW, "警戒"), (40, ORANGE, "危険"), (50, RED, "パニック")]
+# 温度 = 0（極度の悲観）〜100（極度の楽観）。各メーターの値をこの尺度に直して重み付き平均する
+MOOD_METERS = {
+    "vix": {"name": "VIX（米国の恐怖指数）", "lo": 10, "hi": 50, "zones": VOL_ZONES, "fmt": "{:.2f}", "weight": 0.25,
+            "temp": lambda v: np.interp(v, [12, 16, 20, 30, 40], [90, 70, 55, 25, 5]),
+            "desc": "S&P500の今後30日の予想変動率。20未満が平常、30を超えると市場が強い不安を感じている状態。",
+            "src": "Yahoo Finance（^VIX）"},
+    "nkvi": {"name": "日経平均VI（日本の恐怖指数）", "lo": 10, "hi": 50, "zones": VOL_ZONES, "fmt": "{:.2f}", "weight": 0.30,
+             "temp": lambda v: np.interp(v, [14, 18, 22, 30, 40], [90, 70, 55, 25, 5]),
+             "desc": "日経平均の今後30日の予想変動率（VIXの日本版）。平常時でも20前後とVIXより高めに出やすい。",
+             "src": "日経平均プロフィル（日本経済新聞社）"},
+    "adr": {"name": "騰落レシオ（25日）", "lo": 50, "hi": 150, "fmt": "{:.1f}", "weight": 0.30,
+            "zones": [(70, "#3b82f6", "売られすぎ"), (90, "#7cb8f5", "弱い"), (110, "#a3a3a3", "中立"),
+                      (120, ORANGE, "強い"), (150, RED, "過熱")],
+            "temp": lambda v: np.interp(v, [60, 70, 100, 120, 140], [0, 10, 50, 85, 100]),
+            "desc": "25日間の値上がり銘柄数÷値下がり銘柄数×100（東証プライム・スタンダード）。120以上は買われすぎ、70以下は売られすぎの目安。",
+            "src": "当サイト集計（Yahoo Financeの株価から計算）"},
+    "news": {"name": "ニュースの不安度", "lo": 0, "hi": 4, "fmt": "{:.1f}倍", "weight": 0.15,
+             "zones": [(1, GREEN, "平常"), (1.5, YELLOW, "やや増加"), (2.5, ORANGE, "増加"), (4, RED, "急増")],
+             "temp": lambda v: np.interp(math.log2(max(v, 0.25)), [-1, 0, 1, 2], [70, 55, 30, 10]),
+             "desc": "「暴落」「急落」「大幅安」「リスクオフ」「恐怖指数」を含む株のニュースが、直近7日の平均の何倍に増えたか。",
+             "src": "Googleニュース（当サイト集計）"},
+}
+MOOD_TOTAL = {"name": "市場の温度計", "lo": 0, "hi": 100, "fmt": "{:.0f}",
+              "zones": [(20, RED, "極度の悲観"), (40, ORANGE, "悲観"), (60, YELLOW, "中立"), (80, LGREEN, "楽観"),
+                        (100, GREEN, "極度の楽観")]}
+
+
+def _get(url):
+    with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"}), timeout=20) as r:
+        return r.read()
+
+
+def fetch_vix():
+    c = yf.download("^VIX", period="3mo", interval="1d", auto_adjust=True, progress=False)["Close"]
+    return (c["^VIX"] if isinstance(c, pd.DataFrame) else c).dropna()
+
+
+def fetch_nkvi():
+    df = pd.read_csv(io.StringIO(_get(NKVI_CSV).decode("cp932")))
+    s = pd.Series(pd.to_numeric(df["終値"], errors="coerce").values,
+                  index=pd.to_datetime(df["データ日付"], format="%Y/%m/%d", errors="coerce"))
+    return s[s.index.notna()].dropna().tail(90)
+
+
+def advance_decline(close, codes, days=25):
+    """騰落レシオ：days日間の値上がり銘柄数の合計 ÷ 値下がり銘柄数の合計 × 100"""
+    cols = [f"{c}.T" for c in codes if f"{c}.T" in close]
+    diff = close[cols].diff().iloc[1:]
+    up, down = (diff > 0).sum(axis=1), (diff < 0).sum(axis=1)
+    return (up.rolling(days).sum() / down.rolling(days).sum() * 100).dropna().tail(90)
+
+
+def fetch_mood(close, universe, news_window=None):
+    out = {}
+    for key, f in (("vix", fetch_vix), ("nkvi", fetch_nkvi)):
+        try:
+            s = f()
+            if len(s):
+                out[key] = s
+        except Exception as e:
+            print(f"  {MOOD_METERS[key]['name']}の取得失敗: {e}", file=sys.stderr)
+    out["adr"] = advance_decline(close, universe)
+    if news_window:
+        n = fetch_news(FEAR_NEWS, dt.datetime.now(dt.timezone.utc), news_window)
+        if n:
+            out["news"] = n
+    return out
+
+
+def mood_now(mood):
+    """各メーターの今の値と温度、総合の温度"""
+    parts = {}
+    for key, m in MOOD_METERS.items():
+        x = mood.get(key)
+        if x is None:
+            continue
+        v = x["news_ratio"] if key == "news" else float(x.iloc[-1])
+        parts[key] = {"value": v, "temp": float(m["temp"](v))}
+    w = sum(MOOD_METERS[k]["weight"] for k in parts)
+    total = sum(MOOD_METERS[k]["weight"] * p["temp"] for k, p in parts.items()) / w if w else None
+    return {"parts": parts, "total": total}
+
+
+def mood_trend(mood, dates, stored):
+    """総合の温度の推移。保存済みの日はその値、それ以外は株価系のメーター（ニュース以外）から計算し直す"""
+    temps = {}
+    for key, m in MOOD_METERS.items():
+        s = mood.get(key)
+        if key == "news" or s is None:
+            continue
+        temps[key] = s.sort_index().reindex(dates, method="ffill").map(lambda v: float(m["temp"](v)) if pd.notna(v) else np.nan)
+    t = pd.DataFrame(temps)
+    w = pd.Series({k: MOOD_METERS[k]["weight"] for k in t})
+    trend = (t * w).sum(axis=1, min_count=1) / t.notna().mul(w).sum(axis=1)
+    if stored is not None and not stored.empty:
+        st = stored.set_index(pd.to_datetime(stored["日付"]))["総合"]
+        trend = st[~st.index.duplicated(keep="last")].reindex(trend.index).combine_first(trend)
+    return trend.dropna()
+
+
+def load_mood_history():
+    return pd.read_csv(MOOD_HISTORY, encoding="utf-8-sig") if MOOD_HISTORY.exists() else None
+
+
+def save_mood_history(now, date, today):
+    if now["total"] is None:
+        return
+    rec = pd.DataFrame([{"日付": str(date), "総合": round(now["total"], 1),
+                         **{k: round(p["value"], 3) for k, p in now["parts"].items()}}])
+    old = load_mood_history()
+    if old is not None:
+        if is_weekend(today) and (old["日付"] == str(date)).any():  # 週末はニュースが少なく出るので平日の値を残す
+            return
+        rec = pd.concat([old[old["日付"] != str(date)], rec])
+    rec.to_csv(MOOD_HISTORY, index=False, encoding="utf-8-sig")
+
+
 def theme_us(t, us):
     recs = [(s, us["etf"][s]) for s in t.get("us") or [] if s in us["etf"]]
     if not recs:
@@ -968,6 +1091,8 @@ def build(themes, use_news):
     except Exception as e:
         print(f"  日経平均の取得失敗: {e}", file=sys.stderr)
         jp = None
+    print("市場の温度計（VIX・日経VI・騰落レシオ・不安ニュース）取得中…", file=sys.stderr)
+    mood = fetch_mood(close, universe, window if use_news else None)
 
     rows, history, details, extras = [], {}, {}, {}
     for name, t in themes.items():
@@ -1064,7 +1189,7 @@ def build(themes, use_news):
         words = scan_watchwords(dt.datetime.now(dt.timezone.utc), window)
     return {"df": df, "date": close.index[-1].date(), "history": history, "details": details,
             "stocks": list(stocks.values()), "missing": missing, "extras": extras,
-            "events": events, "words": words, "today": today, "window": window, "us": us, "jp": jp, "themes": themes, "surprises": surprises, "rounders": rounders, "screens": screen_lists, "margin_date": mg["date"] if mg else None}
+            "events": events, "words": words, "today": today, "window": window, "us": us, "jp": jp, "mood": mood, "themes": themes, "surprises": surprises, "rounders": rounders, "screens": screen_lists, "margin_date": mg["date"] if mg else None}
 
 
 def print_table(df, date):
@@ -1426,6 +1551,104 @@ def index_chart(c, days=60, w=640, h=220):
             f'<text x="{x(n):.1f}" y="{h - 6}" class="ax" text-anchor="end">{s.index[-1]:%m/%d}</text></svg>')
 
 
+def zone_of(v, zones):
+    return next((z for z in zones if v < z[0]), zones[-1])
+
+
+def gauge(v, lo, hi, zones, label=""):
+    """半円のメーター（SVG）。zones = [(上限, 色, 名前), ...]"""
+    cx, cy, r, ri = 120, 118, 96, 60
+    ang = lambda x: math.pi * (1 - (min(max(x, lo), hi) - lo) / (hi - lo))
+    pt = lambda a, rr: f"{cx + rr * math.cos(a):.1f},{cy - rr * math.sin(a):.1f}"
+    segs, ticks, start = [], [], lo
+    for end, color, _ in zones:
+        a1, a2 = ang(start), ang(end)
+        segs.append(f'<path d="M{pt(a1, r)} A{r},{r} 0 0 1 {pt(a2, r)} L{pt(a2, ri)} A{ri},{ri} 0 0 0 {pt(a1, ri)}Z" '
+                    f'fill="{color}"/>')
+        start = end
+    for t in [lo] + [z[0] for z in zones]:
+        x, y = pt(ang(t), r + 11).split(",")
+        ticks.append(f'<text x="{x}" y="{float(y) + 4:.1f}" class="gt">{t:g}</text>')
+    a = ang(v)
+    needle = f"{pt(a, r - 6)} {pt(a + math.pi / 2, 6)} {pt(a - math.pi / 2, 6)}"
+    return (f'<svg viewBox="0 0 240 128" class="gauge" role="img" aria-label="{html.escape(label)}">'
+            f'<g class="gz">{"".join(segs)}</g>{"".join(ticks)}'
+            f'<polygon points="{needle}" class="gn"/><circle cx="{cx}" cy="{cy}" r="9" class="gn"/>'
+            f'<circle cx="{cx}" cy="{cy}" r="3.5" class="gh"/></svg>')
+
+
+def range_spark(s, lo, hi, w=150, h=30):
+    """メーターの範囲（lo〜hi）で正規化した推移の小さな折れ線"""
+    return sparkline((s.clip(lo, hi) - lo) / (hi - lo) * 100, w, h)
+
+
+def zone_chip(v, zones):
+    _, color, name = zone_of(v, zones)
+    return f'<span class="zone" style="--z:{color}">{name}</span>'
+
+
+def meter_card(key, mood, now, stored):
+    m, p = MOOD_METERS[key], now["parts"].get(key)
+    if p is None:
+        return (f'<div class="meter"><div class="mhead"><b>{m["name"]}</b></div>'
+                f'<p class="note">今回は取得できませんでした。</p></div>')
+    v = p["value"]
+    if key == "news":
+        n = mood["news"]
+        old = stored["news"].dropna() if stored is not None and "news" in stored else pd.Series(dtype=float)
+        prev = float(old.iloc[-1]) if len(old) else None  # stored は前日までの保存分
+        when, trend = f"直近{n['news_recent']}件", ""
+    else:
+        s = mood[key]
+        prev, when = (float(s.iloc[-2]) if len(s) >= 2 else None), f"{s.index[-1]:%m/%d}"
+        trend = range_spark(s.tail(30), m["lo"], m["hi"])
+    chg = ""
+    if prev is not None:
+        d = v - prev
+        chg = f'<small class="{"up" if d > 0 else "down" if d < 0 else ""}">前日比 {d:+.2f}</small>'
+    return f"""<div class="meter">
+<div class="mhead"><b>{m["name"]}</b><span class="sub">{when}</span></div>
+{gauge(v, m["lo"], m["hi"], m["zones"], m["name"])}
+<div class="mval"><b>{m["fmt"].format(v)}</b>{zone_chip(v, m["zones"])}{chg}</div>
+<div class="mtrend">{trend}<span class="sub">温度 {p["temp"]:.0f}</span></div>
+<p class="mdesc">{m["desc"]}</p>
+<p class="msrc">出典：{m["src"]}</p>
+</div>"""
+
+
+def mood_html(r):
+    """総合メーター（ファーストビュー用）とメーター一覧"""
+    mood, now = r.get("mood") or {}, r.get("mood_now")
+    if not now or now["total"] is None:
+        return "", ""
+    stored, total = r.get("mood_stored"), now["total"]
+    trend = r.get("mood_trend")
+    prev = float(trend.iloc[-2]) if trend is not None and len(trend) >= 2 else None
+    chg = f'前日比 <b class="{"up" if total > prev else "down" if total < prev else ""}">{total - prev:+.0f}</b> ・ ' if prev is not None else ""
+    parts = "".join(
+        f'<li><span>{MOOD_METERS[k]["name"].split("（")[0]}</span><i style="--p:{p["temp"]:.0f};--z:{zone_of(p["temp"], MOOD_TOTAL["zones"])[1]}"></i>'
+        f'<b>{p["temp"]:.0f}</b></li>' for k, p in now["parts"].items())
+    z = MOOD_TOTAL["zones"]
+    top = f"""<div class="mood">
+<div class="mgauge">{gauge(total, 0, 100, z, f"市場の温度計 {total:.0f}")}
+<div class="mscore">{total:.0f}<small>/100</small></div>{zone_chip(total, z)}</div>
+<div class="mbody">
+<p class="mtitle">市場の温度計 <span class="sub">独自の総合メーター</span></p>
+<ul class="mparts">{parts}</ul>
+<p class="note">{chg}0＝極度の悲観〜100＝極度の楽観。各メーターを同じ尺度の「温度」に直して合成。 <a href="#meters">メーター一覧へ ↓</a></p>
+{range_spark(trend.tail(30), 0, 100, 220, 34) if trend is not None else ""}
+</div></div>"""
+    weights = "・".join(f'{MOOD_METERS[k]["name"].split("（")[0]} {MOOD_METERS[k]["weight"]:.0%}' for k in MOOD_METERS)
+    cards = "".join(meter_card(k, mood, now, stored) for k in MOOD_METERS)
+    section = f"""<section id="meters" class="meters">
+<h2>市場の温度計（メーター一覧）</h2>
+<p class="sub">恐怖指数や騰落レシオなど、市場の不安・過熱を表す指標をメーターにしたもの。「温度」は各メーターを 0（極度の悲観）〜100（極度の楽観）にそろえた値で、
+総合メーターはその重み付き平均（{weights}。取れなかったメーターは除いて計算）。推移の線はメーターの目盛りの範囲で描いています。</p>
+<div class="mgrid">{cards}</div>
+</section>"""
+    return top, section
+
+
 def hero_html(r):
     """ファーストビュー：サイトの説明と、日経平均の今日・前日の終値とチャート"""
     esc = html.escape
@@ -1470,17 +1693,20 @@ def hero_html(r):
         f'<li><span class="sub">これから動きそうなテーマ</span><b>{esc(early["テーマ"])}</b><small>先回り {early["先回り"]:.0f}点</small></li>' if early is not None else "",
         f'<li><span class="sub">決算サプライズ（直近{SURPRISE_DAYS}営業日）</span><b>{n_sp}銘柄</b><small>上方修正・増配・大幅増益</small></li>'))
 
+    mood_top, meters = mood_html(r)
     return f"""<header class="hero">
 <div class="htext">
 <p class="eyebrow">日本株 × テーマ投資 ・ 毎営業日更新</p>
 <h1>日本株 テーマ注目度ランキング</h1>
 <p class="lead">いま東京市場でお金が集まっているテーマと銘柄はどれか。株価・売買代金・ニュース件数・決算開示（TDnet）・信用残を毎日集計して、<b>勢いのあるテーマ</b>、<b>これから動きそうなテーマ</b>、<b>決算サプライズ銘柄</b>をひと目でわかるようにまとめた日本株の分析サイトです。</p>
+{mood_top}
 <ul class="points">{points}</ul>
 <div class="minis">{minis}</div>
 <p class="note">{r["date"]:%Y/%m/%d} 終値ベース。投資助言ではありません。売買の判断はご自身の責任でお願いします。</p>
 </div>
 {card}
-</header>"""
+</header>
+{meters}"""
 
 
 def write_html(df, date, history, details, stocks, missing, early_section="", tabs=None, hero=""):
@@ -1601,6 +1827,22 @@ summary{{cursor:pointer}} .members{{margin:6px 0 10px}} .members td,.members th{
 .ilegend{{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:.75rem;color:var(--muted)}} .ilegend span{{display:inline-flex;align-items:center;gap:5px}}
 .lg{{display:inline-block;width:16px;height:0;border-top:2px solid var(--accent)}} .lg.ma{{border-top:1.5px dashed var(--muted)}}
 .dot{{display:inline-block;width:9px;height:9px;border-radius:50%;border:2px solid var(--accent)}} .dot.now{{background:var(--accent)}}
+.gauge{{width:100%;height:auto;display:block}} .gauge .gz path{{stroke:var(--bg);stroke-width:2}} .gauge .gt{{fill:var(--muted);font-size:11px;text-anchor:middle}}
+.gauge .gn{{fill:var(--fg)}} .gauge .gh{{fill:var(--bg)}}
+.zone{{display:inline-flex;align-items:center;gap:5px;font-weight:700;font-size:.9rem}} .zone::before{{content:"";width:10px;height:10px;border-radius:50%;background:var(--z)}}
+.mood{{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:8px 18px;align-items:center;padding:14px 16px;margin:0 0 14px;border:1px solid var(--line);border-radius:12px;background:color-mix(in srgb,var(--accent) 4%,var(--bg))}}
+.mgauge{{text-align:center;width:100%;max-width:250px;justify-self:center}} .mscore{{font-size:2.2rem;font-weight:800;line-height:1;font-variant-numeric:tabular-nums;margin-top:-4px}} .mscore small{{font-size:.85rem;font-weight:500;margin-left:2px}}
+.mtitle{{margin:0 0 6px;font-weight:700}} .mbody .note{{margin:6px 0 2px;font-size:.78rem;line-height:1.6}} .mbody .spark{{width:100%;height:34px}}
+.mparts{{list-style:none;padding:0;margin:0;display:grid;gap:3px;font-size:.8rem}}
+.mparts li{{display:grid;grid-template-columns:7.5em minmax(0,1fr) 2em;gap:8px;align-items:center}} .mparts b{{text-align:right;font-variant-numeric:tabular-nums}}
+.mparts i{{display:block;height:8px;border-radius:4px;background:linear-gradient(90deg,var(--z) calc(var(--p)*1%),var(--line) 0)}}
+.meters h2{{margin:8px 0 4px}} .meters>.sub{{font-size:.8rem;line-height:1.7;margin:0 0 12px}}
+.mgrid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:12px;margin:0 0 20px}}
+.meter{{border:1px solid var(--line);border-radius:10px;padding:12px 14px;display:flex;flex-direction:column;gap:4px}}
+.mhead{{display:flex;justify-content:space-between;gap:8px;align-items:baseline;font-size:.9rem}} .mhead .sub{{font-size:.75rem}}
+.mval{{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 10px}} .mval>b{{font-size:1.5rem;font-variant-numeric:tabular-nums}} .mval small{{font-size:.75rem}}
+.mtrend{{display:flex;align-items:center;justify-content:space-between;gap:8px}} .mtrend .sub{{font-size:.75rem}}
+.mdesc{{margin:2px 0 0;font-size:.78rem;line-height:1.6}} .msrc{{margin:0;font-size:.7rem;color:var(--muted)}}
 </style></head><body><main>
 {hero}
 <p class="sub">{date} 終値ベース ・ 表の見出しクリックで並べ替え</p>
@@ -1981,6 +2223,14 @@ def main():
     r["news_rows"] = news_rows(r, r["measured_at"])
     r["news_prev"] = load_prev_weekday_news(r["today"])
     save_news_history(r["news_rows"])
+    r["mood_now"] = now = mood_now(r["mood"])
+    stored = load_mood_history()
+    r["mood_stored"] = stored[stored["日付"] < str(r["date"])] if stored is not None else None
+    if now["total"] is not None and "adr" in r["mood"]:
+        trend = mood_trend(r["mood"], r["mood"]["adr"].index, r["mood_stored"])
+        trend[pd.Timestamp(r["date"])] = now["total"]
+        r["mood_trend"] = trend.sort_index()
+    save_mood_history(now, r["date"], r["today"])
     tabs = screens_html(r["screens"], r["date"], r["margin_date"])
     tabs["quality"] = quality_html(r["screens"]["quality"], len(r["stocks"]), r["date"])
     write_html(r["df"], r["date"], r["history"], r["details"], r["stocks"], r["missing"], early_html(r), tabs, hero_html(r))
