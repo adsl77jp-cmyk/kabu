@@ -1598,6 +1598,42 @@ def meter_card(key, mood, now, stored):
 </div>"""
 
 
+def mood_gauge(v):
+    """総合メーター用の半円（SVG）。今の区分だけ濃く塗り、値の位置に丸い目印、中央に点数"""
+    cx, cy, r = 120, 116, 92
+    ang = lambda x: math.pi * (1 - min(max(x, 0), 100) / 100)
+    pt = lambda a, rr=r: f"{cx + rr * math.cos(a):.1f},{cy - rr * math.sin(a):.1f}"
+    cur, arcs, start = zone_of(v, MOOD_TOTAL["zones"]), [], 0
+    for end, color, name in MOOD_TOTAL["zones"]:
+        a1, a2 = ang(start) - .02, ang(end) + .02  # 区分の間にすき間
+        arcs.append(f'<path d="M{pt(a1)} A{r},{r} 0 0 1 {pt(a2)}" stroke="{color}" '
+                    f'class="{"on" if name == cur[2] else "off"}"><title>{start}〜{end} {name}</title></path>')
+        start = end
+    a = ang(v)
+    return (f'<svg viewBox="0 0 240 132" class="mg" role="img" aria-label="市場の温度計 {v:.0f}（{cur[2]}）">'
+            f'{"".join(arcs)}'
+            f'<circle cx="{pt(a).split(",")[0]}" cy="{pt(a).split(",")[1]}" r="11" class="mk" fill="{cur[1]}"/>'
+            f'<text x="{cx}" y="{cy - 14}" class="ms">{v:.0f}</text>'
+            f'<text x="{cx}" y="{cy + 8}" class="mu">/ 100</text>'
+            f'<text x="{cx - r}" y="{cy + 16}" class="me">悲観</text><text x="{cx + r}" y="{cy + 16}" class="me">楽観</text></svg>')
+
+
+def mood_trend_svg(s, w=320, h=64):
+    """総合の推移。背景に区分の色の帯、線と今日の点"""
+    v = s.clip(0, 100).values
+    y = lambda x: 3 + (100 - x) / 100 * (h - 6)
+    x = lambda i: 4 + i * (w - 8) / max(len(v) - 1, 1)
+    bands, lo = [], 0
+    for end, color, _ in MOOD_TOTAL["zones"]:
+        bands.append(f'<rect x="0" y="{y(end):.1f}" width="{w}" height="{y(lo) - y(end):.1f}" fill="{color}"/>')
+        lo = end
+    pts = " ".join(f"{x(i):.1f},{y(t):.1f}" for i, t in enumerate(v))
+    return (f'<svg viewBox="0 0 {w} {h}" class="mt" role="img" aria-label="市場の温度計 30日の推移">'
+            f'<g class="bd">{"".join(bands)}</g><line x1="0" x2="{w}" y1="{y(50):.1f}" y2="{y(50):.1f}" class="m50"/>'
+            f'<polyline points="{pts}" class="ml"/>'
+            f'<circle cx="{x(len(v) - 1):.1f}" cy="{y(v[-1]):.1f}" r="4" class="me2" fill="{zone_of(v[-1], MOOD_TOTAL["zones"])[1]}"/></svg>')
+
+
 def mood_html(r):
     """総合メーター（ファーストビュー用）とメーター一覧"""
     mood, now = r.get("mood") or {}, r.get("mood_now")
@@ -1605,21 +1641,29 @@ def mood_html(r):
         return "", ""
     stored, total = r.get("mood_stored"), now["total"]
     trend = r.get("mood_trend")
-    prev = float(trend.iloc[-2]) if trend is not None and len(trend) >= 2 else None
-    chg = f'前日比 <b class="{"up" if total > prev else "down" if total < prev else ""}">{total - prev:+.0f}</b> ・ ' if prev is not None else ""
-    parts = "".join(
-        f'<li><span>{MOOD_METERS[k]["name"].split("（")[0]}</span><i style="--p:{p["temp"]:.0f};--z:{zone_of(p["temp"], MOOD_TOTAL["zones"])[1]}"></i>'
-        f'<b>{p["temp"]:.0f}</b></li>' for k, p in now["parts"].items())
     z = MOOD_TOTAL["zones"]
-    top = f"""<div class="mood">
-<div class="mgauge">{gauge(total, 0, 100, z, f"市場の温度計 {total:.0f}")}
-<div class="mscore">{total:.0f}<small>/100</small></div>{zone_chip(total, z)}</div>
-<div class="mbody">
-<p class="mtitle">市場の温度計 <span class="sub">独自の総合メーター</span></p>
-<ul class="mparts">{parts}</ul>
-<p class="note">{chg}0＝極度の悲観〜100＝極度の楽観。各メーターを同じ尺度の「温度」に直して合成。 <a href="#meters">メーター一覧へ ↓</a></p>
-{range_spark(trend.tail(30), 0, 100, 220, 34) if trend is not None else ""}
-</div></div>"""
+    _, color, label = zone_of(total, z)
+    prev = float(trend.iloc[-2]) if trend is not None and len(trend) >= 2 else None
+    chg = (f'<span class="mchg {"up" if total > prev else "down" if total < prev else ""}">'
+           f'前日比 {total - prev:+.0f}</span>' if prev is not None else "")
+    parts = "".join(
+        f'<li><span class="pn">{ {"news": "不安ニュース"}.get(k, MOOD_METERS[k]["name"].split("（")[0])}</span>'
+        f'<span class="pv">{MOOD_METERS[k]["fmt"].format(p["value"])}</span>'
+        f'<span class="pb"><i style="left:{p["temp"]:.0f}%;--z:{zone_of(p["temp"], z)[1]}"></i></span>'
+        f'<b>{p["temp"]:.0f}</b></li>' for k, p in now["parts"].items())
+    span = ""
+    if trend is not None and len(trend) >= 2:
+        t30 = trend.tail(30)
+        span = (f'<div class="mtr">{mood_trend_svg(t30)}<div class="mtr-ax"><span>{t30.index[0]:%m/%d}</span>'
+                f'<span>30日の推移</span><span>今日</span></div></div>')
+    top = f"""<div class="mood" style="--z:{color}">
+<div class="mhd"><div><p class="mtitle">市場の温度計</p><p class="msub">独自の総合メーター ・ 0＝極度の悲観〜100＝極度の楽観</p></div>
+<span class="sub">{r["date"]:%m/%d}</span></div>
+<div class="mgauge">{mood_gauge(total)}<div class="mlabel"><span class="pill">{label}</span>{chg}</div></div>
+<div class="mbody"><ul class="mparts"><li class="mph"><span>メーター</span><span>値</span><span>悲観 ← 温度 → 楽観</span><span></span></li>{parts}</ul>
+<a class="mlink" href="#meters">各メーターの詳しい説明 ↓</a></div>
+{span}
+</div>"""
     weights = "・".join(f'{MOOD_METERS[k]["name"].split("（")[0]} {MOOD_METERS[k]["weight"]:.0%}' for k in MOOD_METERS)
     cards = "".join(meter_card(k, mood, now, stored) for k in MOOD_METERS)
     section = f"""<section id="meters" class="meters">
@@ -1812,12 +1856,28 @@ summary{{cursor:pointer}} .members{{margin:6px 0 10px}} .members td,.members th{
 .gauge{{width:100%;height:auto;display:block}} .gauge .gz path{{stroke:var(--bg);stroke-width:2}} .gauge .gt{{fill:var(--muted);font-size:11px;text-anchor:middle}}
 .gauge .gn{{fill:var(--fg)}} .gauge .gh{{fill:var(--bg)}}
 .zone{{display:inline-flex;align-items:center;gap:5px;font-weight:700;font-size:.9rem}} .zone::before{{content:"";width:10px;height:10px;border-radius:50%;background:var(--z)}}
-.mood{{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:8px 18px;align-items:center;padding:14px 16px;margin:0 0 14px;border:1px solid var(--line);border-radius:12px;background:color-mix(in srgb,var(--accent) 4%,var(--bg))}}
-.mgauge{{text-align:center;width:100%;max-width:250px;justify-self:center}} .mscore{{font-size:2.2rem;font-weight:800;line-height:1;font-variant-numeric:tabular-nums;margin-top:-4px}} .mscore small{{font-size:.85rem;font-weight:500;margin-left:2px}}
-.mtitle{{margin:0 0 6px;font-weight:700}} .mbody .note{{margin:6px 0 2px;font-size:.78rem;line-height:1.6}} .mbody .spark{{width:100%;height:34px}}
-.mparts{{list-style:none;padding:0;margin:0;display:grid;gap:3px;font-size:.8rem}}
-.mparts li{{display:grid;grid-template-columns:7.5em minmax(0,1fr) 2em;gap:8px;align-items:center}} .mparts b{{text-align:right;font-variant-numeric:tabular-nums}}
-.mparts i{{display:block;height:8px;border-radius:4px;background:linear-gradient(90deg,var(--z) calc(var(--p)*1%),var(--line) 0)}}
+.mood{{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px 20px;align-items:center;padding:16px 18px 14px;margin:0 0 16px;border:1px solid var(--line);border-top:4px solid var(--z);border-radius:14px;
+ background:radial-gradient(120% 90% at 0% 0%,color-mix(in srgb,var(--z) 14%,transparent),transparent 60%),var(--bg);box-shadow:0 1px 2px rgb(0 0 0/.04),0 8px 24px -12px rgb(0 0 0/.12)}}
+.mhd{{grid-column:1/-1;display:flex;justify-content:space-between;align-items:flex-start;gap:8px}} .mhd .sub{{font-size:.78rem;font-variant-numeric:tabular-nums}}
+.mtitle{{margin:0;font-weight:800;font-size:1.1rem;letter-spacing:.02em}} .msub{{margin:2px 0 0;font-size:.75rem;color:var(--muted)}}
+.mgauge{{width:100%;max-width:260px;justify-self:center;text-align:center}}
+.mg{{width:100%;height:auto;display:block;overflow:visible}} .mg path{{fill:none;stroke-width:18;stroke-linecap:round}} .mg .off{{opacity:.28}}
+.mg .mk{{stroke:var(--bg);stroke-width:4;filter:drop-shadow(0 1px 2px rgb(0 0 0/.3))}}
+.mg .ms{{fill:var(--fg);font-size:50px;font-weight:800;text-anchor:middle;font-variant-numeric:tabular-nums}} .mg .mu{{fill:var(--muted);font-size:12px;text-anchor:middle}}
+.mg .me{{fill:var(--muted);font-size:11px;text-anchor:middle}}
+.mlabel{{display:flex;justify-content:center;align-items:center;gap:8px;flex-wrap:wrap;margin-top:2px}}
+.pill{{display:inline-block;padding:3px 14px;border-radius:999px;font-weight:800;background:color-mix(in srgb,var(--z) 24%,transparent);border:1px solid color-mix(in srgb,var(--z) 60%,transparent)}}
+.mchg{{font-size:.8rem;font-weight:700;font-variant-numeric:tabular-nums}}
+.mparts{{list-style:none;padding:0;margin:0;display:grid;gap:9px;font-size:.82rem}}
+.mparts li{{display:grid;grid-template-columns:6.6em 3.6em minmax(60px,1fr) 1.8em;gap:8px;align-items:center}}
+.mparts .mph{{font-size:.68rem;color:var(--muted);margin-bottom:-3px}} .mparts .mph span:nth-child(3){{text-align:center}}
+.pv,.mparts b{{text-align:right;font-variant-numeric:tabular-nums}} .pv{{color:var(--muted)}}
+.pb{{position:relative;height:8px}} .pb::before{{content:"";position:absolute;inset:0;border-radius:4px;opacity:.38;background:linear-gradient(90deg,#e53935 0 20%,#f28c1b 20% 40%,#f5c518 40% 60%,#9ccc65 60% 80%,#43a047 80%)}}
+.pb i{{position:absolute;top:50%;width:13px;height:13px;border-radius:50%;background:var(--z);border:2px solid var(--bg);transform:translate(-50%,-50%);box-shadow:0 0 0 1px color-mix(in srgb,var(--fg) 25%,transparent)}}
+.mlink{{display:inline-block;margin-top:10px;font-size:.78rem}}
+.mtr{{grid-column:1/-1;border-top:1px dashed var(--line);padding-top:10px}} .mt{{width:100%;height:auto;display:block}} .mt .bd{{opacity:.13}}
+.mt .m50{{stroke:var(--muted);stroke-dasharray:3 3;opacity:.6}} .mt .ml{{fill:none;stroke:var(--fg);stroke-width:1.8;stroke-linejoin:round}} .mt .me2{{stroke:var(--bg);stroke-width:2}}
+.mtr-ax{{display:flex;justify-content:space-between;font-size:.7rem;color:var(--muted);margin-top:2px}}
 .meters h2{{margin:8px 0 4px}} .meters>.sub{{font-size:.8rem;line-height:1.7;margin:0 0 12px}}
 .mgrid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:12px;margin:0 0 20px}}
 .meter{{border:1px solid var(--line);border-radius:10px;padding:12px 14px;display:flex;flex-direction:column;gap:4px}}
