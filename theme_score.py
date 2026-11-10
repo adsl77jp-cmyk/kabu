@@ -559,28 +559,23 @@ def fetch_jp():
 
 
 # 市場の温度計：恐怖指数などのメーターと、それを0〜100にそろえて合成した独自の総合メーター
-NKVI_CSV = "https://indexes.nikkei.co.jp/nkave/historical/nikkei_stock_average_vi_daily_jp.csv"
 FEAR_NEWS = "株価 暴落 OR 急落 OR 大幅安 OR リスクオフ OR 恐怖指数"  # 不安を表す言葉のニュース件数
 MOOD_HISTORY = BASE / "mood_history.csv"
 GREEN, LGREEN, YELLOW, ORANGE, RED = "#43a047", "#9ccc65", "#f5c518", "#f28c1b", "#e53935"
 VOL_ZONES = [(20, GREEN, "平穏"), (30, YELLOW, "警戒"), (40, ORANGE, "危険"), (50, RED, "パニック")]
 # 温度 = 0（極度の悲観）〜100（極度の楽観）。各メーターの値をこの尺度に直して重み付き平均する
 MOOD_METERS = {
-    "vix": {"name": "VIX（米国の恐怖指数）", "lo": 10, "hi": 50, "zones": VOL_ZONES, "fmt": "{:.2f}", "weight": 0.25,
+    "vix": {"name": "VIX（米国の恐怖指数）", "lo": 10, "hi": 50, "zones": VOL_ZONES, "fmt": "{:.2f}", "weight": 0.35,
             "temp": lambda v: np.interp(v, [12, 16, 20, 30, 40], [90, 70, 55, 25, 5]),
             "desc": "S&P500の今後30日の予想変動率。20未満が平常、30を超えると市場が強い不安を感じている状態。",
             "src": "Yahoo Finance（^VIX）"},
-    "nkvi": {"name": "日経平均VI（日本の恐怖指数）", "lo": 10, "hi": 50, "zones": VOL_ZONES, "fmt": "{:.2f}", "weight": 0.30,
-             "temp": lambda v: np.interp(v, [14, 18, 22, 30, 40], [90, 70, 55, 25, 5]),
-             "desc": "日経平均の今後30日の予想変動率（VIXの日本版）。平常時でも20前後とVIXより高めに出やすい。",
-             "src": "日経平均プロフィル（日本経済新聞社）"},
-    "adr": {"name": "騰落レシオ（25日）", "lo": 50, "hi": 150, "fmt": "{:.1f}", "weight": 0.30,
+    "adr": {"name": "騰落レシオ（25日）", "lo": 50, "hi": 150, "fmt": "{:.1f}", "weight": 0.40,
             "zones": [(70, "#3b82f6", "売られすぎ"), (90, "#7cb8f5", "弱い"), (110, "#a3a3a3", "中立"),
                       (120, ORANGE, "強い"), (150, RED, "過熱")],
             "temp": lambda v: np.interp(v, [60, 70, 100, 120, 140], [0, 10, 50, 85, 100]),
             "desc": "25日間の値上がり銘柄数÷値下がり銘柄数×100（東証プライム・スタンダード）。120以上は買われすぎ、70以下は売られすぎの目安。",
             "src": "当サイト集計（Yahoo Financeの株価から計算）"},
-    "news": {"name": "ニュースの不安度", "lo": 0, "hi": 4, "fmt": "{:.1f}倍", "weight": 0.15,
+    "news": {"name": "ニュースの不安度", "lo": 0, "hi": 4, "fmt": "{:.1f}倍", "weight": 0.25,
              "zones": [(1, GREEN, "平常"), (1.5, YELLOW, "やや増加"), (2.5, ORANGE, "増加"), (4, RED, "急増")],
              "temp": lambda v: np.interp(math.log2(max(v, 0.25)), [-1, 0, 1, 2], [70, 55, 30, 10]),
              "desc": "「暴落」「急落」「大幅安」「リスクオフ」「恐怖指数」を含む株のニュースが、直近7日の平均の何倍に増えたか。",
@@ -591,21 +586,9 @@ MOOD_TOTAL = {"name": "市場の温度計", "lo": 0, "hi": 100, "fmt": "{:.0f}",
                         (100, GREEN, "極度の楽観")]}
 
 
-def _get(url):
-    with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"}), timeout=20) as r:
-        return r.read()
-
-
 def fetch_vix():
     c = yf.download("^VIX", period="3mo", interval="1d", auto_adjust=True, progress=False)["Close"]
     return (c["^VIX"] if isinstance(c, pd.DataFrame) else c).dropna()
-
-
-def fetch_nkvi():
-    df = pd.read_csv(io.StringIO(_get(NKVI_CSV).decode("cp932")))
-    s = pd.Series(pd.to_numeric(df["終値"], errors="coerce").values,
-                  index=pd.to_datetime(df["データ日付"], format="%Y/%m/%d", errors="coerce"))
-    return s[s.index.notna()].dropna().tail(90)
 
 
 def advance_decline(close, codes, days=25):
@@ -618,13 +601,12 @@ def advance_decline(close, codes, days=25):
 
 def fetch_mood(close, universe, news_window=None):
     out = {}
-    for key, f in (("vix", fetch_vix), ("nkvi", fetch_nkvi)):
-        try:
-            s = f()
-            if len(s):
-                out[key] = s
-        except Exception as e:
-            print(f"  {MOOD_METERS[key]['name']}の取得失敗: {e}", file=sys.stderr)
+    try:
+        s = fetch_vix()
+        if len(s):
+            out["vix"] = s
+    except Exception as e:
+        print(f"  VIXの取得失敗: {e}", file=sys.stderr)
     out["adr"] = advance_decline(close, universe)
     if news_window:
         n = fetch_news(FEAR_NEWS, dt.datetime.now(dt.timezone.utc), news_window)
@@ -1091,7 +1073,7 @@ def build(themes, use_news):
     except Exception as e:
         print(f"  日経平均の取得失敗: {e}", file=sys.stderr)
         jp = None
-    print("市場の温度計（VIX・日経VI・騰落レシオ・不安ニュース）取得中…", file=sys.stderr)
+    print("市場の温度計（VIX・騰落レシオ・不安ニュース）取得中…", file=sys.stderr)
     mood = fetch_mood(close, universe, window if use_news else None)
 
     rows, history, details, extras = [], {}, {}, {}
