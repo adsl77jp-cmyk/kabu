@@ -60,7 +60,7 @@ import yfinance as yf
 import margin
 
 BASE = Path(__file__).resolve().parent
-SITE_URL = "https://adsl77jp-cmyk.github.io/kabu/"  # 公開ページのURL（sitemap.xml・canonical に使う）
+SITE_URL = "https://kabu.hyakuretsu.com/"  # 公開ページのURL（sitemap.xml・canonical に使う）
 SITE_NAME = "日本株 テーマ注目度ランキング"
 REPO_URL = "https://github.com/adsl77jp-cmyk/kabu"
 STATIC_UPDATED = "2026-10-30"  # 運営者情報・免責事項・プライバシーポリシーの最終更新日（書き換えたら変える）

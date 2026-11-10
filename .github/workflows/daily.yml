@@ -1,4 +1,4 @@
-# 平日の朝にレポートを作り、GitHub Pages（https://adsl77jp-cmyk.github.io/kabu/）で公開する
+# 平日の朝にレポートを作り、GitHub Pages（https://kabu.hyakuretsu.com/）で公開する
 # お名前.com のレンタルサーバーにも置く場合は Secrets（Settings → Secrets and variables → Actions）を登録:
 #   FTP_HOST      FTPサーバー名（お名前.com のコントロールパネルに表示）
 #   FTP_USER      FTPユーザー名
