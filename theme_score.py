@@ -1661,8 +1661,8 @@ def mood_html(r):
 <span class="sub">{r["date"]:%m/%d}</span></div>
 <div class="mgauge">{mood_gauge(total)}<div class="mlabel"><span class="pill">{label}</span>{chg}</div></div>
 <div class="mbody"><ul class="mparts"><li class="mph"><span>メーター</span><span>値</span><span>悲観 ← 温度 → 楽観</span><span></span></li>{parts}</ul>
-<a class="mlink" href="#meters">各メーターの詳しい説明 ↓</a></div>
 {span}
+<a class="mlink" href="#meters">各メーターの詳しい説明 ↓</a></div>
 </div>"""
     weights = "・".join(f'{MOOD_METERS[k]["name"].split("（")[0]} {MOOD_METERS[k]["weight"]:.0%}' for k in MOOD_METERS)
     cards = "".join(meter_card(k, mood, now, stored) for k in MOOD_METERS)
@@ -1720,19 +1720,22 @@ def hero_html(r):
         f'<li><span class="sub">決算サプライズ（直近{SURPRISE_DAYS}営業日）</span><b>{n_sp}銘柄</b><small>上方修正・増配・大幅増益</small></li>'))
 
     mood_top, meters = mood_html(r)
-    return f"""<header class="hero">
-<div class="htext">
+    # 並び：タイトル → 市場の温度計（総合）→ メーター一覧 → テーマの要点と日経平均
+    return f"""<header class="htop">
 <p class="eyebrow">日本株 × テーマ投資 ・ 毎営業日更新</p>
 <h1>日本株 テーマ注目度ランキング</h1>
-<p class="lead">いま東京市場でお金が集まっているテーマと銘柄はどれか。株価・売買代金・ニュース件数・決算開示（TDnet）・信用残を毎日集計して、<b>勢いのあるテーマ</b>、<b>これから動きそうなテーマ</b>、<b>決算サプライズ銘柄</b>をひと目でわかるようにまとめた日本株の分析サイトです。</p>
+<p class="lead">いま東京市場でお金が集まっているテーマと銘柄はどれか。株価・売買代金・ニュース件数・決算開示（TDnet）・信用残を毎日集計して、<b>市場の温度</b>、<b>勢いのあるテーマ</b>、<b>これから動きそうなテーマ</b>、<b>決算サプライズ銘柄</b>をひと目でわかるようにまとめた日本株の分析サイトです。</p>
+</header>
 {mood_top}
+{meters}
+<div class="hero">
+<div class="htext">
 <ul class="points">{points}</ul>
 <div class="minis">{minis}</div>
 <p class="note">{r["date"]:%Y/%m/%d} 終値ベース。投資助言ではありません。売買の判断はご自身の責任でお願いします。</p>
 </div>
 {card}
-</header>
-{meters}"""
+</div>"""
 
 
 def write_html(df, date, history, details, stocks, missing, early_section="", tabs=None, hero=""):
@@ -1856,11 +1859,13 @@ summary{{cursor:pointer}} .members{{margin:6px 0 10px}} .members td,.members th{
 .gauge{{width:100%;height:auto;display:block}} .gauge .gz path{{stroke:var(--bg);stroke-width:2}} .gauge .gt{{fill:var(--muted);font-size:11px;text-anchor:middle}}
 .gauge .gn{{fill:var(--fg)}} .gauge .gh{{fill:var(--bg)}}
 .zone{{display:inline-flex;align-items:center;gap:5px;font-weight:700;font-size:.9rem}} .zone::before{{content:"";width:10px;height:10px;border-radius:50%;background:var(--z)}}
-.mood{{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px 20px;align-items:center;padding:16px 18px 14px;margin:0 0 16px;border:1px solid var(--line);border-top:4px solid var(--z);border-radius:14px;
+.htop{{padding:8px 0 16px}} .htop h1{{font-size:clamp(1.6rem,3.4vw,2.3rem);line-height:1.25;margin:0 0 10px;text-wrap:balance}} .htop .lead{{max-width:62em;margin:0}}
+.mood{{display:grid;grid-template-columns:minmax(0,1fr);gap:12px 32px;align-items:center;padding:20px 24px 18px;margin:0 0 22px;border:1px solid var(--line);border-top:4px solid var(--z);border-radius:14px;
  background:radial-gradient(120% 90% at 0% 0%,color-mix(in srgb,var(--z) 14%,transparent),transparent 60%),var(--bg);box-shadow:0 1px 2px rgb(0 0 0/.04),0 8px 24px -12px rgb(0 0 0/.12)}}
 .mhd{{grid-column:1/-1;display:flex;justify-content:space-between;align-items:flex-start;gap:8px}} .mhd .sub{{font-size:.78rem;font-variant-numeric:tabular-nums}}
-.mtitle{{margin:0;font-weight:800;font-size:1.1rem;letter-spacing:.02em}} .msub{{margin:2px 0 0;font-size:.75rem;color:var(--muted)}}
-.mgauge{{width:100%;max-width:260px;justify-self:center;text-align:center}}
+@media (min-width:760px){{.mood{{grid-template-columns:minmax(280px,420px) minmax(0,1fr)}}}}
+.mtitle{{margin:0;font-weight:800;font-size:1.35rem;letter-spacing:.02em}} .msub{{margin:2px 0 0;font-size:.8rem;color:var(--muted)}}
+.mgauge{{width:100%;max-width:420px;justify-self:center;text-align:center}} .mgauge .pill{{font-size:1.1rem;padding:4px 18px}}
 .mg{{width:100%;height:auto;display:block;overflow:visible}} .mg path{{fill:none;stroke-width:18;stroke-linecap:round}} .mg .off{{opacity:.28}}
 .mg .mk{{stroke:var(--bg);stroke-width:4;filter:drop-shadow(0 1px 2px rgb(0 0 0/.3))}}
 .mg .ms{{fill:var(--fg);font-size:50px;font-weight:800;text-anchor:middle;font-variant-numeric:tabular-nums}} .mg .mu{{fill:var(--muted);font-size:12px;text-anchor:middle}}
@@ -1868,19 +1873,19 @@ summary{{cursor:pointer}} .members{{margin:6px 0 10px}} .members td,.members th{
 .mlabel{{display:flex;justify-content:center;align-items:center;gap:8px;flex-wrap:wrap;margin-top:2px}}
 .pill{{display:inline-block;padding:3px 14px;border-radius:999px;font-weight:800;background:color-mix(in srgb,var(--z) 24%,transparent);border:1px solid color-mix(in srgb,var(--z) 60%,transparent)}}
 .mchg{{font-size:.8rem;font-weight:700;font-variant-numeric:tabular-nums}}
-.mparts{{list-style:none;padding:0;margin:0;display:grid;gap:9px;font-size:.82rem}}
-.mparts li{{display:grid;grid-template-columns:6.6em 3.6em minmax(60px,1fr) 1.8em;gap:8px;align-items:center}}
+.mparts{{list-style:none;padding:0;margin:0;display:grid;gap:11px;font-size:.9rem}}
+.mparts li{{display:grid;grid-template-columns:6.6em 3.8em minmax(60px,1fr) 2em;gap:10px;align-items:center}}
 .mparts .mph{{font-size:.68rem;color:var(--muted);margin-bottom:-3px}} .mparts .mph span:nth-child(3){{text-align:center}}
 .pv,.mparts b{{text-align:right;font-variant-numeric:tabular-nums}} .pv{{color:var(--muted)}}
 .pb{{position:relative;height:8px}} .pb::before{{content:"";position:absolute;inset:0;border-radius:4px;opacity:.38;background:linear-gradient(90deg,#e53935 0 20%,#f28c1b 20% 40%,#f5c518 40% 60%,#9ccc65 60% 80%,#43a047 80%)}}
 .pb i{{position:absolute;top:50%;width:13px;height:13px;border-radius:50%;background:var(--z);border:2px solid var(--bg);transform:translate(-50%,-50%);box-shadow:0 0 0 1px color-mix(in srgb,var(--fg) 25%,transparent)}}
 .mlink{{display:inline-block;margin-top:10px;font-size:.78rem}}
-.mtr{{grid-column:1/-1;border-top:1px dashed var(--line);padding-top:10px}} .mt{{width:100%;height:auto;display:block}} .mt .bd{{opacity:.13}}
+.mtr{{border-top:1px dashed var(--line);padding-top:10px;margin-top:14px}} .mt{{width:100%;height:auto;display:block}} .mt .bd{{opacity:.13}}
 .mt .m50{{stroke:var(--muted);stroke-dasharray:3 3;opacity:.6}} .mt .ml{{fill:none;stroke:var(--fg);stroke-width:1.8;stroke-linejoin:round}} .mt .me2{{stroke:var(--bg);stroke-width:2}}
 .mtr-ax{{display:flex;justify-content:space-between;font-size:.7rem;color:var(--muted);margin-top:2px}}
 .meters h2{{margin:8px 0 4px}} .meters>.sub{{font-size:.8rem;line-height:1.7;margin:0 0 12px}}
-.mgrid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:12px;margin:0 0 20px}}
-.meter{{border:1px solid var(--line);border-radius:10px;padding:12px 14px;display:flex;flex-direction:column;gap:4px}}
+.mgrid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px;margin:0 0 28px}}
+.meter{{border:1px solid var(--line);border-radius:10px;padding:12px 14px;display:flex;flex-direction:column;gap:4px}} .meter .gauge{{max-width:250px;margin:0 auto}}
 .mhead{{display:flex;justify-content:space-between;gap:8px;align-items:baseline;font-size:.9rem}} .mhead .sub{{font-size:.75rem}}
 .mval{{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 10px}} .mval>b{{font-size:1.5rem;font-variant-numeric:tabular-nums}} .mval small{{font-size:.75rem}}
 .mtrend{{display:flex;align-items:center;justify-content:space-between;gap:8px}} .mtrend .sub{{font-size:.75rem}}
