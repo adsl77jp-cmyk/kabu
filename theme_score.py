@@ -76,6 +76,12 @@ TURNOVER_WINDOW = 20
 Z_CLIP = 3.0
 
 
+def load_guide():
+    """テーマ別ページの解説（theme_guide.yaml）"""
+    path = BASE / "theme_guide.yaml"
+    return (yaml.safe_load(path.read_text(encoding="utf-8")) or {}) if path.exists() else {}
+
+
 def load_themes():
     with open(BASE / "themes.yaml", encoding="utf-8") as f:
         themes = yaml.safe_load(f)
@@ -2047,6 +2053,7 @@ footer.site{margin:48px 0 0;padding:16px 0;border-top:1px solid var(--line);font
 .tlist{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:8px;list-style:none;padding:0}
 .tlist a{display:flex;justify-content:space-between;gap:8px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;text-decoration:none;color:var(--fg)}
 .tlist a:hover{border-color:var(--accent)} .tlist b{font-variant-numeric:tabular-nums}
+ul.why{line-height:1.8;padding-left:1.3em;max-width:52em} ul.why li{margin:2px 0} main>p:not(.sub):not(.note){max-width:52em;line-height:1.85}
 """
 
 FAVICON = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="6" fill="#0f766e"/>'
@@ -2139,9 +2146,11 @@ def write_public(page, df, date, history, details, stock_head, stock_cells):
     pub = pub.replace(all_sec.group(0), "")
     pub = pub.replace('<button role="tab" data-tab="all">全銘柄</button>',
                       f'<a class="navlink" href="all.html">全銘柄（{n_all}銘柄）→</a>')
+    guide = load_guide()
+    seo = lambda name: guide.get(name, {}).get("seo") or f"{name}関連株"
     pub = re.sub(r"<details><summary>(.*?)</summary>",
                  lambda m: m.group(0) + f'<p><a href="theme/{urllib.parse.quote(theme_file(html.unescape(m.group(1))))}">'
-                                        f'{m.group(1)}の銘柄ページへ →</a></p>', pub)
+                                        f'{esc(seo(html.unescape(m.group(1))))}の一覧ページへ →</a></p>', pub)
     title = re.search(r"<title>(.*?)</title>", pub).group(1)
     pub = public_head("", title, SITE_DESC, page_ld("", title)) + pub[pub.index("<style>"):]
     pub = pub.replace("</style>", PUBLIC_CSS + "</style>", 1)
@@ -2175,25 +2184,34 @@ def write_public(page, df, date, history, details, stock_head, stock_cells):
             ("注目度（総合）", f"{s:.0f}点", ""), ("順位", f"{i}位／{n}テーマ", ""),
             ("前日比", f"{r['前日比']:+.0f}点", cls(r["前日比"])), ("売買代金（対20日平均）", f"{r['売買代金倍率']:.2f}倍", ""),
             ("対TOPIX", f"{r['対TOPIX']:+.1%}", cls(r["対TOPIX"])), ("上昇した銘柄の割合", f"{r['上昇比率']:.0%}", "")))
-        body = f"""<h1>{esc(name)}関連銘柄の注目度と一覧</h1>
+        g, kw = guide.get(name, {}), seo(name)
+        lis = lambda key: "".join(f"<li>{esc(x)}</li>" for x in g.get(key) or [])
+        main_names = "、".join(f'{esc(x["name"])}（{x["code"]}）' for x in mem[:6])
+        explain = (f"""<h2>{esc(name)}が注目される理由</h2>
+<p>{esc(g.get("about", ""))}{esc(kw)}の主な銘柄は、{main_names}{"など" if len(mem) > 6 else ""}です。</p>
+<h3>注目されている材料</h3><ul class="why">{lis("why")}</ul>
+<h3>今後の注目点</h3><ul class="why">{lis("watch")}</ul>
+<h3>注意点</h3><ul class="why">{lis("risk")}</ul>""" if g else "")
+        body = f"""<h1>{esc(kw)} 一覧と注目度（{date:%Y年%m月}）</h1>
 <p class="sub">{date:%Y/%m/%d} 終値ベース ・ 毎営業日更新</p>
 <p class="lead">{date:%Y年%m月%d日}時点の「{esc(name)}」テーマの注目度は<b>{s:.0f}点</b>で、{n}テーマ中{i}位、{lvl}です（50が平常、70を超えると注目）。
 前日からは{r['前日比']:+.0f}点、5日前からは{r['5日比']:+.0f}点の変化。売買代金は20日平均の{r['売買代金倍率']:.2f}倍で、
 TOPIXに対して{r['対TOPIX']:+.1%}、構成銘柄の{r['上昇比率']:.0%}が上昇しました。{news}</p>
 <div class="minis">{minis}</div>
 <p class="sub">注目度（株価スコア）の30営業日の推移</p>{sparkline(history[name], w=320, h=60)}
-<h2>{esc(name)}の構成銘柄（{len(mem)}銘柄）</h2>
+{explain}
+<h2>{esc(kw)}の一覧（{len(mem)}銘柄）</h2>
 <p class="sub">評価 = 成長度60% + 割安度40%（全銘柄内の順位から0〜100）。見出しクリックで並べ替え。</p>
 <div class="wrap"><table class="sortable"><thead><tr><th>コード</th><th>銘柄</th>{stock_head}</tr></thead><tbody>{rows}</tbody></table></div>
 <h2>ほかのテーマ</h2>
 <ul class="tlist">{"".join(f'<li><a href="{urllib.parse.quote(theme_file(t))}">{esc(t)}<b>{v:.0f}</b></a></li>' for t, v in zip(df["テーマ"], df["総合"]) if t != name)}</ul>
 <p class="note">投資助言ではありません。データ: Yahoo Finance（yfinance）、Googleニュース、東証。</p>
 """
-        save(f, f"{name}関連銘柄の注目度と一覧（{len(mem)}銘柄）｜{SITE_NAME}",
-             f"{name}関連の日本株{len(mem)}銘柄（{names}など）の株価・売買代金・業績・割安度を毎営業日更新。"
+        save(f, f"{kw}一覧（{len(mem)}銘柄・{date:%Y年%m月}）注目される理由と業績・割安度｜{SITE_NAME}",
+             f"{kw}{len(mem)}銘柄（{names}など）の一覧と、注目される理由・今後の注目点。株価・売買代金・業績・割安度を毎営業日更新。"
              f"{date:%m/%d}時点のテーマ注目度は{s:.0f}点（{n}テーマ中{i}位）。",
              body, (("トップ", ""), ("テーマ一覧", "theme/"), (name, f)))
-        items.append(f'<li><a href="{urllib.parse.quote(theme_file(name))}">{i}. {esc(name)}<b>{s:.0f}</b></a></li>')
+        items.append(f'<li><a href="{urllib.parse.quote(theme_file(name))}">{i}. {esc(kw)}<b>{s:.0f}</b></a></li>')
 
     save("theme/index.html", f"テーマ別 注目度ランキング（{n}テーマ）｜{SITE_NAME}",
          f"半導体・AI・防衛・銀行など日本株の{n}テーマを、売買代金・対TOPIX・上昇銘柄の割合・ニュース件数から毎営業日採点。"
@@ -2254,6 +2272,54 @@ TOPIXに対して{r['対TOPIX']:+.1%}、構成銘柄の{r['上昇比率']:.0%}�
     (out / "robots.txt").write_text(f"User-agent: *\nAllow: /\nSitemap: {SITE_URL}sitemap.xml\n", encoding="utf-8")
 
 
+DRAFTS = BASE / "drafts"  # X・note に貼る投稿文の下書き（毎回上書き。過去分は git の履歴に残る）
+
+
+def x_len(text):
+    """Xの文字数（日本語は2、URLは23として数える。上限280）"""
+    urls = re.findall(r"https?://\S+", text)
+    rest = re.sub(r"https?://\S+", "", text)
+    return 23 * len(urls) + sum(1 if ord(c) < 0x1100 else 2 for c in rest)
+
+
+def write_drafts(r):
+    df, now, d = r["df"], r.get("mood_now") or {}, r["date"]
+    guide = load_guide()
+    seo = lambda name: guide.get(name, {}).get("seo") or f"{name}関連株"
+    url = lambda name: SITE_URL + "theme/" + urllib.parse.quote(theme_file(name))
+    early = df.sort_values("先回り", ascending=False).head(3)
+    parts = now.get("parts", {})
+    meters = "・".join(f'{ {"news": "不安ニュース"}.get(k, MOOD_METERS[k]["name"].split("（")[0])} {MOOD_METERS[k]["fmt"].format(p["value"])}'
+                       for k, p in parts.items())
+    head = (f'【市場の温度計 {d:%m/%d}】{now["total"]:.0f}（{zone_of(now["total"], MOOD_TOTAL["zones"])[2]}）\n{meters}\n\n'
+            if now.get("total") is not None else f"【日本株テーマ注目度 {d:%m/%d}】\n\n")
+    tail = f"\n{SITE_URL}\n#日本株 #株式投資"
+    for n_top in (3, 2, 1):  # 280を超えるときは順位を減らす
+        tops = "\n".join(f'{i}位 {x["テーマ"]} {x["総合"]:.0f}点' for i, x in df.head(n_top).iterrows())
+        text = f'{head}注目テーマ\n{tops}\nこれから：{early.iloc[0]["テーマ"]}（先回り{early.iloc[0]["先回り"]:.0f}）\n{tail}'
+        if x_len(text) <= 280:
+            break
+    sp = r["surprises"]["picks"]
+    note = [f"# 日本株 市場の温度計と注目テーマ（{d:%Y年%m月%d日}）", ""]
+    if now.get("total") is not None:
+        note += ["## 市場の温度計", f'総合は **{now["total"]:.0f}（{zone_of(now["total"], MOOD_TOTAL["zones"])[2]}）**。'
+                 "0＝極度の悲観〜100＝極度の楽観。", ""]
+        note += [f'- {MOOD_METERS[k]["name"]}：{MOOD_METERS[k]["fmt"].format(p["value"])}'
+                 f'（{zone_of(p["value"], MOOD_METERS[k]["zones"])[2]}）' for k, p in parts.items()]
+        note += [""]
+    note += ["## 注目度ランキング（上位5テーマ）", "50が平常、70を超えると注目。", ""]
+    note += [f'{i}. [{seo(x["テーマ"])}]({url(x["テーマ"])})：{x["総合"]:.0f}点（前日比 {x["前日比"]:+.0f}）'
+             + (f'　牽引：{x["牽引"]}' if x["牽引"] else "") for i, x in df.head(5).iterrows()]
+    note += ["", "## これから動きそうなテーマ（先回りスコア上位）", ""]
+    note += [f'- [{seo(x["テーマ"])}]({url(x["テーマ"])})：{x["先回り"]:.0f}点'
+             + (f'　{x["シグナル"]}' if x["シグナル"] else "") for _, x in early.iterrows()]
+    note += ["", f"## 決算サプライズ", f"直近{SURPRISE_DAYS}営業日の開示で、上方修正・増配・大幅増益の銘柄は{len(sp)}銘柄。", "",
+             "---", f"毎営業日の更新はこちら：{SITE_URL}", "※投資助言ではありません。売買の判断はご自身の責任でお願いします。"]
+    DRAFTS.mkdir(exist_ok=True)
+    (DRAFTS / "x.txt").write_text(text + "\n", encoding="utf-8")
+    (DRAFTS / "note.md").write_text("\n".join(note) + "\n", encoding="utf-8")
+
+
 def main():
     sys.stdout.reconfigure(encoding="utf-8")
     ap = argparse.ArgumentParser()
@@ -2278,6 +2344,10 @@ def main():
         trend[pd.Timestamp(r["date"])] = now["total"]
         r["mood_trend"] = trend.sort_index()
     save_mood_history(now, r["date"], r["today"])
+    try:
+        write_drafts(r)
+    except Exception as e:
+        print(f"  投稿文の下書きの作成失敗: {e}", file=sys.stderr)
     tabs = screens_html(r["screens"], r["date"], r["margin_date"])
     tabs["quality"] = quality_html(r["screens"]["quality"], len(r["stocks"]), r["date"])
     write_html(r["df"], r["date"], r["history"], r["details"], r["stocks"], r["missing"], early_html(r), tabs, hero_html(r))
