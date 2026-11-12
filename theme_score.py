@@ -2284,6 +2284,7 @@ def x_len(text):
 
 def write_drafts(r):
     df, now, d = r["df"], r.get("mood_now") or {}, r["date"]
+    t = r["today"]  # 見出しの日付は作った日（朝の更新なら前日の終値＋夜の米国市場を反映）
     guide = load_guide()
     seo = lambda name: guide.get(name, {}).get("seo") or f"{name}関連株"
     url = lambda name: SITE_URL + "theme/" + urllib.parse.quote(theme_file(name))
@@ -2291,8 +2292,8 @@ def write_drafts(r):
     parts = now.get("parts", {})
     meters = "・".join(f'{ {"news": "不安ニュース"}.get(k, MOOD_METERS[k]["name"].split("（")[0])} {MOOD_METERS[k]["fmt"].format(p["value"])}'
                        for k, p in parts.items())
-    head = (f'【市場の温度計 {d:%m/%d}】{now["total"]:.0f}（{zone_of(now["total"], MOOD_TOTAL["zones"])[2]}）\n{meters}\n\n'
-            if now.get("total") is not None else f"【日本株テーマ注目度 {d:%m/%d}】\n\n")
+    head = (f'【市場の温度計 {t:%m/%d}】{now["total"]:.0f}（{zone_of(now["total"], MOOD_TOTAL["zones"])[2]}）\n{meters}\n\n'
+            if now.get("total") is not None else f"【日本株テーマ注目度 {t:%m/%d}】\n\n")
     tail = f"\n{SITE_URL}\n#日本株 #株式投資"
     for n_top in (3, 2, 1):  # 280を超えるときは順位を減らす
         tops = "\n".join(f'{i}位 {x["テーマ"]} {x["総合"]:.0f}点' for i, x in df.head(n_top).iterrows())
@@ -2300,7 +2301,7 @@ def write_drafts(r):
         if x_len(text) <= 280:
             break
     sp = r["surprises"]["picks"]
-    note = [f"# 日本株 市場の温度計と注目テーマ（{d:%Y年%m月%d日}）", ""]
+    note = [f"# 日本株 市場の温度計と注目テーマ（{t:%Y年%m月%d日}）", "", f"{d:%Y/%m/%d} 終値ベース。", ""]
     if now.get("total") is not None:
         note += ["## 市場の温度計", f'総合は **{now["total"]:.0f}（{zone_of(now["total"], MOOD_TOTAL["zones"])[2]}）**。'
                  "0＝極度の悲観〜100＝極度の楽観。", ""]
