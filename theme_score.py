@@ -1726,9 +1726,12 @@ def hero_html(r):
         f'<li><span class="sub">決算サプライズ（直近{SURPRISE_DAYS}営業日）</span><b>{n_sp}銘柄</b><small>上方修正・増配・大幅増益</small></li>'))
 
     mood_top, meters = mood_html(r)
+    from zoneinfo import ZoneInfo
+    # GitHub のサーバーは世界標準時で動くので、日本時間に直して出す
+    updated = dt.datetime.now(ZoneInfo("Asia/Tokyo"))
     # 並び：タイトル → 市場の温度計（総合）→ メーター一覧 → テーマの要点と日経平均
     return f"""<header class="htop">
-<p class="eyebrow">日本株 × テーマ投資 ・ 毎営業日更新</p>
+<p class="eyebrow">日本株 × テーマ投資 ・ 毎営業日更新 ・ <time datetime="{updated:%Y-%m-%dT%H:%M+09:00}">更新：{updated:%Y/%m/%d %H:%M}</time></p>
 <h1>日本株 テーマ注目度ランキング</h1>
 <p class="lead">いま東京市場でお金が集まっているテーマと銘柄はどれか。株価・売買代金・ニュース件数・決算開示（TDnet）・信用残を毎日集計して、<b>市場の温度</b>、<b>勢いのあるテーマ</b>、<b>これから動きそうなテーマ</b>、<b>決算サプライズ銘柄</b>をひと目でわかるようにまとめた日本株の分析サイトです。</p>
 </header>
