@@ -69,6 +69,7 @@ SITE_DESC = ("日経平均の終値と、いま東京市場で資金が集まっ
 GA4_ID = "G-457CRQKCF8"  # Google アナリティクス（公開ページだけに入れる）
 GSC_VERIFY = "dn1J65lcb-gHhuFv3DjvQdBRd6YJquvos6qIaajGCpA"  # Search Console の所有権確認
 BENCH = "1306.T"  # TOPIX連動ETF（TOPIX指数の代わり）
+MARKET_SETTLED = dt.time(16, 0)  # 大引け（15:30）後、その日の終値がそろったとみなす時刻（日本時間）
 WEIGHTS = {"turnover": 0.45, "excess": 0.35, "breadth": 0.20}
 NEWS_WEIGHT = 0.20
 Z_WINDOW = 60
@@ -173,6 +174,13 @@ def fetch_prices(codes):
     # （yfinanceは最終日に出来高だけ入って終値が欠けることがあるので、出来高で営業日を判定する）
     valid = (close.notna() | (volume.fillna(0) > 0)).sum(axis=1) >= close.shape[1] * 0.5
     close, volume = close[valid].copy(), volume[valid]
+    # 取引時間中（と大引け直後でデータがそろうまで）に動いたときは、途中の株価・出来高で採点しないよう
+    # 今日の分を外して前の営業日の終値で集計する（予約実行が遅れて9時を過ぎることがあるため）
+    from zoneinfo import ZoneInfo
+    now = dt.datetime.now(ZoneInfo("Asia/Tokyo"))
+    if len(close) and close.index[-1].date() == now.date() and now.time() < MARKET_SETTLED:
+        print(f"  取引時間中のため、今日（{now:%m/%d}）の途中の株価は使わず前の営業日の終値で集計します", file=sys.stderr)
+        close, volume = close.iloc[:-1].copy(), volume.iloc[:-1]
     return fill_last_close(close), volume
 
 
@@ -2057,6 +2065,10 @@ footer.site{margin:48px 0 0;padding:16px 0;border-top:1px solid var(--line);font
 .tlist a{display:flex;justify-content:space-between;gap:8px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;text-decoration:none;color:var(--fg)}
 .tlist a:hover{border-color:var(--accent)} .tlist b{font-variant-numeric:tabular-nums}
 ul.why{line-height:1.8;padding-left:1.3em;max-width:52em} ul.why li{margin:2px 0} main>p:not(.sub):not(.note){max-width:52em;line-height:1.85}
+.views{margin:12px 0 8px;padding:12px 16px;border-left:4px solid var(--accent);background:color-mix(in srgb,var(--accent) 7%,transparent);border-radius:0 8px 8px 0}
+.views p{margin:6px 0} .views .who{font-size:.8rem;color:var(--muted);margin:0 0 4px}
+.posts{list-style:none;padding:0} .posts li{padding:10px 0;border-bottom:1px solid var(--line)} .posts small{display:block;color:var(--muted)}
+.pager{display:flex;justify-content:space-between;gap:12px;margin:32px 0 0;font-size:.9rem} .bloglink{margin:10px 0 0}
 """
 
 FAVICON = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="6" fill="#0f766e"/>'
@@ -2107,7 +2119,7 @@ def page_ld(path, title, crumbs=()):
 
 
 def site_footer(prefix=""):
-    links = (("", "トップ"), ("theme/", "テーマ一覧"), ("all.html", "全銘柄"),
+    links = (("", "トップ"), ("theme/", "テーマ一覧"), ("blog/", "毎日の解説記事"), ("all.html", "全銘柄"),
              ("about.html", "運営者情報・データについて"), ("disclaimer.html", "免責事項"), ("privacy.html", "プライバシーポリシー"))
     return ('<footer class="site">'
             + "".join(f'<a href="{(prefix + u) or "./"}">{t}</a>' for u, t in links)
@@ -2262,6 +2274,28 @@ TOPIXに対して{r['対TOPIX']:+.1%}、構成銘柄の{r['上昇比率']:.0%}�
 </div>
 """, (("トップ", ""), ("プライバシーポリシー", "privacy.html")), STATIC_UPDATED)
 
+    # 毎日の解説記事（blog/*.json）と記事一覧
+    posts = [json.loads(p.read_text(encoding="utf-8")) for p in sorted(BLOG_DIR.glob("*.json"))] if BLOG_DIR.exists() else []
+    if posts:
+        (out / "blog").mkdir()
+        for i, p in enumerate(posts):
+            pager = '<nav class="pager"><span>' + (
+                f'<a href="{posts[i - 1]["date"]}.html">← {esc(posts[i - 1]["title"])}</a>' if i else "") + "</span><span>" + (
+                f'<a href="{posts[i + 1]["date"]}.html">{esc(posts[i + 1]["title"])} →</a>' if i + 1 < len(posts) else "") + "</span></nav>\n"
+            path = f'blog/{p["date"]}.html'
+            save(path, f'{p["title"]}｜{SITE_NAME}', p["desc"], p["body"] + "\n" + pager,
+                 (("トップ", ""), ("毎日の解説記事", "blog/"), (p["title"], path)), p["made"][:10])
+        lis = "".join(f'<li><a href="{p["date"]}.html">{esc(p["title"])}</a><small>{esc(p["desc"])}</small></li>'
+                      for p in reversed(posts))
+        save("blog/index.html", f"毎日の解説記事｜{SITE_NAME}",
+             "日本株の注目テーマと市場の温度計を、毎営業日の終値から振り返る解説記事の一覧。",
+             f"<h1>毎日の解説記事</h1>\n<p class=\"sub\">毎営業日の朝に、前日の終値から作っています（全{len(posts)}本）。</p>\n"
+             f'<ul class="posts">{lis}</ul>\n', (("トップ", ""), ("毎日の解説記事", "blog/")), posts[-1]["made"][:10])
+        p = posts[-1]
+        (out / "index.html").write_text((out / "index.html").read_text(encoding="utf-8").replace(
+            "</header>", f'<p class="bloglink"><a href="blog/{p["date"]}.html">最新の解説記事：{esc(p["title"])} →</a></p>\n</header>', 1),
+            encoding="utf-8")
+
     (out / "favicon.svg").write_text(FAVICON, encoding="utf-8")
     if (BASE / "assets" / "ogp.png").exists():
         shutil.copy(BASE / "assets" / "ogp.png", out / "ogp.png")
@@ -2324,6 +2358,259 @@ def write_drafts(r):
     (DRAFTS / "note.md").write_text("\n".join(note) + "\n", encoding="utf-8")
 
 
+# ---- ブログ（毎営業日の解説記事）--------------------------------------------------------------
+# 記事は blog/<終値の日付>.json に保存して git に残し、公開時に全部をページにする。
+# 同じ終値の日に何度動かしても上書きされるのはその日の記事だけで、前の日の記事は書き直さない。
+# 「今日の見方」は blog_views.yaml にある型（運営者が確認した文）の中から、その日のデータに当てはまるものだけを選ぶ。
+BLOG_DIR = BASE / "blog"
+BLOG_VIEWS = BASE / "blog_views.yaml"
+WEEKDAYS = "月火水木金土日"
+# 上位テーマの偏り（crowded）を見るための分野分け
+THEME_FIELDS = {
+    "ハイテク": ["半導体製造装置", "AI・データセンター", "サイバーセキュリティ", "フィジカルAI・ロボット", "量子コンピューター", "IT・コンサル"],
+    "金融": ["メガバンク", "地方銀行", "保険（金利上昇メリット）"],
+    "内需・ディフェンシブ": ["インバウンド", "建設・国土強靭化", "食品（ディフェンシブ）", "電力・原発", "ゲーム・エンタメ"],
+    "国策・資源": ["防衛", "宇宙", "レアアース", "海運"],
+}
+
+
+def _blog_prev(date):
+    """前の営業日のテーマ表（順位つき）と、1位が何日続いているか"""
+    path = BASE / "history.csv"
+    if not path.exists():
+        return None, {}
+    h = pd.read_csv(path, encoding="utf-8-sig")
+    days = sorted(d for d in h["日付"].unique() if d < str(date))
+    if not days:
+        return None, {}
+    tops = [h[h["日付"] == d].sort_values("総合", ascending=False).iloc[0]["テーマ"] for d in days]
+    prev = h[h["日付"] == days[-1]].sort_values("総合", ascending=False).reset_index(drop=True)
+    prev.index += 1
+    return prev, {"tops": tops}
+
+
+def blog_view_candidates(r, prev, past):
+    """blog_views.yaml の各型について、今日のデータで当てはまれば (目立ち度, 置き換える値) を返す"""
+    df, now = r["df"], r.get("mood_now") or {}
+    parts = {k: p["value"] for k, p in (now.get("parts") or {}).items()}
+    total = now.get("total")
+    stored = r.get("mood_stored")
+    prev_total = float(stored.iloc[-1]["総合"]) if stored is not None and len(stored) else None
+    top = df.iloc[0]
+    prev_rank = {t: i for i, t in zip(prev.index, prev["テーマ"])} if prev is not None else {}
+    early = df.sort_values("先回り", ascending=False).head(3)
+    picks = r["surprises"]["picks"]
+    out = {}
+
+    def add(key, score, **v):
+        out[key] = (score, v)
+
+    if total is not None:
+        if total >= 75:
+            add("mood_hot", 3 + (total - 75) / 10, 温度=f"{total:.0f}")
+        if total <= 30:
+            add("mood_cold", 3 + (30 - total) / 10, 温度=f"{total:.0f}")
+        if prev_total is not None and total - prev_total >= 8:
+            add("mood_jump", 3 + (total - prev_total) / 8, 温度=f"{total:.0f}", 前日温度=f"{prev_total:.0f}")
+        if prev_total is not None and prev_total - total >= 8:
+            add("mood_drop", 3 + (prev_total - total) / 8, 温度=f"{total:.0f}", 前日温度=f"{prev_total:.0f}")
+    if parts.get("vix") is not None and parts["vix"] >= 25:
+        add("vix_high", 2 + (parts["vix"] - 25) / 10, VIX=f"{parts['vix']:.1f}")
+    if parts.get("adr") is not None and parts["adr"] >= 120:
+        add("adr_hot", 2.5, 騰落レシオ=f"{parts['adr']:.0f}")
+    if parts.get("adr") is not None and parts["adr"] <= 75:
+        add("adr_cold", 2.5, 騰落レシオ=f"{parts['adr']:.0f}")
+    if parts.get("news") is not None and parts["news"] >= 2:
+        add("fear_news", 2 + parts["news"] / 4, 不安ニュース=f"{parts['news']:.1f}")
+
+    tops = past.get("tops", [])
+    streak = 1
+    for t in reversed(tops):
+        if t != top["テーマ"]:
+            break
+        streak += 1
+    if streak >= 3:
+        add("top_streak", 2 + streak / 5, テーマ=top["テーマ"], 連続=streak)
+    if prev_rank.get(top["テーマ"], 1) >= 2:
+        add("new_top", 2.5, テーマ=top["テーマ"], 点=f"{top['総合']:.0f}", 前日順位=prev_rank[top["テーマ"]])
+    s = df.sort_values("前日比", ascending=False).iloc[0]
+    if s["前日比"] >= 15:
+        add("surge", 2 + s["前日比"] / 15, テーマ=s["テーマ"], 前日比=f"{s['前日比']:+.0f}", 牽引=s["牽引"] or "主力銘柄")
+    if prev is not None:
+        now_rank = {t: i for i, t in zip(df.index, df["テーマ"])}
+        falls = [x for _, x in df.iterrows()
+                 if prev_rank.get(x["テーマ"], 99) <= 3 and x["前日比"] <= -10 and now_rank[x["テーマ"]] > prev_rank[x["テーマ"]]]
+        if falls:
+            f = min(falls, key=lambda x: x["前日比"])
+            add("fade", 1.5 + abs(f["前日比"]) / 10, テーマ=f["テーマ"], 前日比=f"{f['前日比']:+.0f}")
+    field_of = {t: k for k, ts in THEME_FIELDS.items() for t in ts}
+    fields = pd.Series([field_of.get(t) for t in df.head(5)["テーマ"]]).value_counts()
+    if len(fields) and fields.iloc[0] >= 4:
+        add("crowded", 2, 分野=fields.index[0])
+    if (df.head(3)["上昇比率"] >= 0.8).all():
+        add("broad", 1.5)
+
+    m = df[(df["売買代金倍率"] >= 1.8) & (df["株価スコア"] < 55)]
+    if len(m):
+        x = m.sort_values("売買代金倍率").iloc[-1]
+        add("money_first", 2 + x["売買代金倍率"] / 1.8, テーマ=x["テーマ"], 代金倍率=f"{x['売買代金倍率']:.1f}")
+    m = df.head(5)[df.head(5)["売買代金倍率"] <= 0.8]
+    if len(m):
+        x = m.sort_values("売買代金倍率").iloc[0]
+        add("money_fade", 1.5, テーマ=x["テーマ"], 代金倍率=f"{x['売買代金倍率']:.2f}")
+
+    m = early[(early["ニュース倍率"].fillna(0) >= 1.5) & (early["株価スコア"] < 55)]
+    if len(m):
+        x = m.sort_values("ニュース倍率").iloc[-1]
+        add("early_news", 2.5 + x["ニュース倍率"] / 3, テーマ=x["テーマ"], ニュース倍率=f"{x['ニュース倍率']:.1f}")
+    for _, x in early.iterrows():
+        ex = r["extras"].get(x["テーマ"], {})
+        ev = [e for e in ex.get("events", []) if 0 <= e["days"] <= 7]
+        ea = [(d, nm) for d, nm in ex.get("earnings", []) if d <= 7]
+        if ev or ea:
+            what = (f"{ev[0]['name']}（{'開催中' if ev[0]['days'] == 0 else str(ev[0]['days']) + '日後'}）" if ev
+                    else "・".join(nm for _, nm in ea[:3]) + f"の決算（{ea[0][0]}日後）")
+            add("early_event", 2, テーマ=x["テーマ"], イベント=what)
+            break
+    us_moves = []
+    for name, t in (r.get("themes") or {}).items():
+        for sym in t.get("us") or []:
+            rec = (r.get("us") or {}).get("etf", {}).get(sym)
+            if rec and abs(rec["ret"]) >= 0.02:
+                us_moves.append((abs(rec["ret"]), sym, rec["ret"], name))
+    if us_moves:
+        _, sym, ret, _ = max(us_moves)
+        names = [n for _, s2, _, n in us_moves if s2 == sym]
+        add("us_lead", 2 + abs(ret) / 0.02, 米国ETF=f"{names[0]}関連のETF（{sym}）", 米国騰落=f"{ret:+.1%}",
+            テーマ="・".join(names[:3]))
+
+    if len(picks) >= 10:
+        add("surprise_many", 1.5 + len(picks) / 20, サプライズ数=len(picks))
+    top5 = list(df.head(5)["テーマ"])
+    for c in picks:
+        hit = [t for t in c.get("themes", []) if t in top5]
+        if hit:
+            add("surprise_theme", 2, テーマ=hit[0], 銘柄=c["name"],
+                サプライズ内容="・".join(t for t in c["tags"] if "修正" in t or "配" in t or "営業益" in t) or "好決算")
+            break
+    return out
+
+
+def blog_pick_views(r, prev, past, last_ids):
+    """当てはまった型から、目立つ順に最大2つ（前日と同じ型・同じテーマの重なりは避ける）"""
+    tmpl = {v["id"]: v["文"] for v in (yaml.safe_load(BLOG_VIEWS.read_text(encoding="utf-8")) or [])} \
+        if BLOG_VIEWS.exists() else {}
+    cands = blog_view_candidates(r, prev, past)
+    ranked = sorted(((s * (0.5 if k in last_ids else 1), k, v) for k, (s, v) in cands.items() if k in tmpl),
+                    key=lambda x: -x[0])
+    chosen, themes = [], set()
+    for _, k, v in ranked:
+        if v.get("テーマ") and v["テーマ"] in themes:
+            continue
+        chosen.append((k, tmpl[k].format(**v)))
+        themes.add(v.get("テーマ"))
+        if len(chosen) == 2:
+            break
+    if not chosen and "quiet" in tmpl:
+        chosen.append(("quiet", tmpl["quiet"]))
+    return chosen
+
+
+def write_blog(r):
+    """その日の解説記事を blog/<終値の日付>.json に保存する"""
+    from zoneinfo import ZoneInfo
+    esc = html.escape
+    df, d, now = r["df"], r["date"], r.get("mood_now") or {}
+    path = BLOG_DIR / f"{d}.json"
+    if is_weekend(r["today"]) and path.exists():  # 週末に動かしたときは平日に作った記事を残す
+        return
+    olds = sorted(BLOG_DIR.glob("*.json")) if BLOG_DIR.exists() else []
+    last = [p for p in olds if p.stem < str(d)]
+    last_ids = json.loads(last[-1].read_text(encoding="utf-8")).get("views", []) if last else []
+    prev, past = _blog_prev(d)
+    views = blog_pick_views(r, prev, past, last_ids)
+    guide = load_guide()
+    seo = lambda name: guide.get(name, {}).get("seo") or f"{name}関連株"
+    link = lambda name: f'<a href="../theme/{urllib.parse.quote(theme_file(name))}">{esc(name)}</a>'
+    prev_rank = {t: i for i, t in zip(prev.index, prev["テーマ"])} if prev is not None else {}
+    top = df.iloc[0]
+    total = now.get("total")
+    stored = r.get("mood_stored")
+    prev_total = float(stored.iloc[-1]["総合"]) if stored is not None and len(stored) else None
+    day = f"{d.month}月{d.day}日（{WEEKDAYS[d.weekday()]}）"
+
+    title = f"{day}の日本株：注目テーマは{top['テーマ']}" + (f"、市場の温度計は{total:.0f}" if total is not None else "")
+    body = [f"<h1>{esc(title)}</h1>",
+            f'<p class="sub">{d:%Y/%m/%d} 終値ベース ・ {dt.datetime.now(ZoneInfo("Asia/Tokyo")):%Y/%m/%d %H:%M} 作成</p>']
+    jp = r.get("jp")
+    lead = []
+    if jp:  # 取引時間中に動いたときは今日の途中の値が入っているので、記事の日の終値を探す
+        c = jp["close"][[x.date() <= d for x in jp["close"].index]]
+        if len(c) >= 2 and c.index[-1].date() == d:
+            last, before = float(c.iloc[-1]), float(c.iloc[-2])
+            lead.append(f"{day}の日経平均の終値は{last:,.0f}円で、前日から{last - before:+,.0f}円（{last / before - 1:+.1%}）。")
+    lead.append(f"{len(df)}テーマの注目度では{esc(top['テーマ'])}が{top['総合']:.0f}点で1位でした。")
+    body.append(f'<p class="lead">{"".join(lead)}</p>')
+    if views:
+        body.append('<div class="views"><p class="who">今日の見方</p>'
+                    + "".join(f"<p>{esc(t)}</p>" for _, t in views) + "</div>")
+
+    if total is not None:
+        z = zone_of(total, MOOD_TOTAL["zones"])[2]
+        diff = f"前日の{prev_total:.0f}から{total - prev_total:+.0f}。" if prev_total is not None else ""
+        lis = "".join(f'<li>{MOOD_METERS[k]["name"]}：{MOOD_METERS[k]["fmt"].format(p["value"])}'
+                      f'（{zone_of(p["value"], MOOD_METERS[k]["zones"])[2]}）</li>' for k, p in now["parts"].items())
+        body.append(f"<h2>市場の温度計：{total:.0f}（{z}）</h2>"
+                    f"<p>{diff}0が極度の悲観、100が極度の楽観です。</p><ul class=\"why\">{lis}</ul>")
+
+    rows = []
+    for i, x in df.head(5).iterrows():
+        pr = prev_rank.get(x["テーマ"])
+        move = "初登場" if pr is None else "→" if pr == i else f"{pr}位から{'↑' if pr > i else '↓'}"
+        rows.append(f"<tr><td>{i}</td><td class=\"name\">{link(x['テーマ'])}</td><td>{x['総合']:.0f}</td>"
+                    f"<td>{move}</td><td>{x['売買代金倍率']:.2f}倍</td><td>{esc(x['牽引'] or '')}</td></tr>")
+    body.append("<h2>注目度ランキング（上位5テーマ）</h2><p class=\"sub\">50が平常、70を超えると注目。売買代金は20日平均との比較。</p>"
+                "<div class=\"wrap\"><table><thead><tr><th>順位</th><th>テーマ</th><th>注目度</th><th>前日の順位</th>"
+                f"<th>売買代金</th><th>上昇した主な銘柄</th></tr></thead><tbody>{''.join(rows)}</tbody></table></div>")
+
+    if prev is not None:
+        up = df[df["前日比"] >= 8].sort_values("前日比", ascending=False).head(3)
+        dn = df[df["前日比"] <= -8].sort_values("前日比").head(3)
+        ch = [f"<li>{link(x['テーマ'])}：{x['前日比']:+.0f}点（{prev_rank.get(x['テーマ'], '-')}位→{i}位）</li>"
+              for i, x in pd.concat([up, dn]).iterrows()]
+        if ch:
+            body.append(f"<h2>前日から大きく動いたテーマ</h2><ul class=\"why\">{''.join(ch)}</ul>")
+
+    early = df.sort_values("先回り", ascending=False).head(3)
+    body.append("<h2>これから動きそうなテーマ</h2><p>ニュースの増え方・近いイベントや決算・米国の同じ分野の動きから計算した「先回りスコア」の上位です。</p>"
+                "<ul class=\"why\">" + "".join(f"<li>{link(x['テーマ'])}（{x['先回り']:.0f}点）"
+                                              + (f"：{esc(x['シグナル'])}" if x["シグナル"] else "") + "</li>"
+                                              for _, x in early.iterrows()) + "</ul>")
+
+    sp = r["surprises"]["picks"]
+    if sp:
+        lis = "".join(f"<li>{esc(c['name'])}（{c['code']}）：{esc('・'.join(c['tags']))}"
+                      + (f"　開示後 {c['reaction']:+.1%}" if c.get("reaction") is not None else "") + "</li>"
+                      for c in sp[:5])
+        body.append(f"<h2>決算サプライズ</h2><p>直近{SURPRISE_DAYS}営業日の開示で、上方修正・増配・大幅増益の銘柄は{len(sp)}銘柄。"
+                    f"点数の高い順に5銘柄を挙げます。</p><ul class=\"why\">{lis}</ul>")
+
+    us = r.get("us") or {}
+    mv = sorted(((s, rec["ret"]) for s, rec in us.get("etf", {}).items() if s != US_BENCH), key=lambda x: -abs(x[1]))[:4]
+    if mv:
+        body.append("<h2>前日の米国市場</h2><p>日本のテーマと関係の深い米国ETFで、値動きの大きかったもの："
+                    + "、".join(f"{s} {v:+.1%}" for s, v in mv) + "。</p>")
+    body.append('<p class="note">投資助言ではありません。売買の判断はご自身の責任でお願いします。'
+                "数字は当サイトの自動集計（Yahoo Finance・Googleニュース・東証の適時開示）によるものです。</p>")
+    desc = (f"{day}の日本株の注目テーマと市場の温度計。1位は{top['テーマ']}（{top['総合']:.0f}点）"
+            + "、続いて" + "・".join(df.iloc[1:3]["テーマ"]) + "。"
+            + (views[0][1][:60] + "…" if views else ""))
+    BLOG_DIR.mkdir(exist_ok=True)
+    path.write_text(json.dumps({"date": str(d), "made": dt.datetime.now(ZoneInfo("Asia/Tokyo")).isoformat(timespec="minutes"),
+                                "title": title, "desc": desc, "views": [k for k, _ in views], "body": "\n".join(body)},
+                               ensure_ascii=False, indent=1), encoding="utf-8")
+
+
 def main():
     sys.stdout.reconfigure(encoding="utf-8")
     ap = argparse.ArgumentParser()
@@ -2352,7 +2639,11 @@ def main():
         write_drafts(r)
     except Exception as e:
         print(f"  投稿文の下書きの作成失敗: {e}", file=sys.stderr)
-    tabs = screens_html(r["screens"], r["date"], r["margin_date"])
+    try:
+        write_blog(r)
+    except Exception as e:
+        print(f"  ブログ記事の作成失敗: {e}", file=sys.stderr)
+    tabs =screens_html(r["screens"], r["date"], r["margin_date"])
     tabs["quality"] = quality_html(r["screens"]["quality"], len(r["stocks"]), r["date"])
     write_html(r["df"], r["date"], r["history"], r["details"], r["stocks"], r["missing"], early_html(r), tabs, hero_html(r))
     print(f"\n保存: report.html / public/index.html / history.csv")
