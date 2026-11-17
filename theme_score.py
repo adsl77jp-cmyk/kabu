@@ -2119,7 +2119,7 @@ def page_ld(path, title, crumbs=()):
 
 
 def site_footer(prefix=""):
-    links = (("", "トップ"), ("theme/", "テーマ一覧"), ("blog/", "毎日の解説記事"), ("all.html", "全銘柄"),
+    links = (("", "トップ"), ("theme/", "テーマ一覧"), ("blog/", "毎日の解説記事"), ("articles/", "特集記事"), ("all.html", "全銘柄"),
              ("about.html", "運営者情報・データについて"), ("disclaimer.html", "免責事項"), ("privacy.html", "プライバシーポリシー"))
     return ('<footer class="site">'
             + "".join(f'<a href="{(prefix + u) or "./"}">{t}</a>' for u, t in links)
@@ -2296,6 +2296,25 @@ TOPIXに対して{r['対TOPIX']:+.1%}、構成銘柄の{r['上昇比率']:.0%}�
             "</header>", f'<p class="bloglink"><a href="blog/{p["date"]}.html">最新の解説記事：{esc(p["title"])} →</a></p>\n</header>', 1),
             encoding="utf-8")
 
+    # 特集記事（articles/*.json。手で書いた記事。日付の新しい順に一覧）
+    arts = sorted((json.loads(p.read_text(encoding="utf-8")) for p in ARTICLE_DIR.glob("*.json")),
+                  key=lambda a: a["date"]) if ARTICLE_DIR.exists() else []
+    if arts:
+        (out / "articles").mkdir()
+        for a in arts:
+            path = f'articles/{a["slug"]}.html'
+            save(path, f'{a["title"]}｜{SITE_NAME}', a["desc"], a["body"],
+                 (("トップ", ""), ("特集記事", "articles/"), (a["title"], path)), a["made"][:10])
+        lis = "".join(f'<li><a href="{a["slug"]}.html">{esc(a["title"])}</a><small>{a["date"]} ・ {esc(a["desc"])}</small></li>'
+                      for a in reversed(arts))
+        save("articles/index.html", f"特集記事｜{SITE_NAME}", "注目銘柄や決算など、話題のテーマを掘り下げる特集記事の一覧。",
+             f'<h1>特集記事</h1>\n<p class="sub">話題の銘柄や決算を掘り下げる記事です（全{len(arts)}本）。</p>\n'
+             f'<ul class="posts">{lis}</ul>\n', (("トップ", ""), ("特集記事", "articles/")), arts[-1]["made"][:10])
+        a = arts[-1]
+        (out / "index.html").write_text((out / "index.html").read_text(encoding="utf-8").replace(
+            "</header>", f'<p class="bloglink"><a href="articles/{a["slug"]}.html">特集：{esc(a["title"])} →</a></p>\n</header>', 1),
+            encoding="utf-8")
+
     (out / "favicon.svg").write_text(FAVICON, encoding="utf-8")
     if (BASE / "assets" / "ogp.png").exists():
         shutil.copy(BASE / "assets" / "ogp.png", out / "ogp.png")
@@ -2364,6 +2383,7 @@ def write_drafts(r):
 # 「今日の見方」は blog_views.yaml にある型（運営者が確認した文）の中から、その日のデータに当てはまるものだけを選ぶ。
 BLOG_DIR = BASE / "blog"
 BLOG_VIEWS = BASE / "blog_views.yaml"
+ARTICLE_DIR = BASE / "articles"  # 特集記事（手で書いた記事。slug・date・made・title・desc・body の JSON）
 WEEKDAYS = "月火水木金土日"
 # 上位テーマの偏り（crowded）を見るための分野分け
 THEME_FIELDS = {
